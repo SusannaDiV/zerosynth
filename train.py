@@ -16,8 +16,10 @@ from chemprojector.utils.misc import (
 from chemprojector.utils.vc import get_vc_info
 import warnings
 import logging
+from rdkit import RDLogger
 
-warnings.filterwarnings("ignore", category=UserWarning, module="rdkit")
+RDLogger.DisableLog('rdApp.*')
+warnings.filterwarnings("ignore")
 logging.getLogger().setLevel(logging.ERROR)
 
 torch.backends.cuda.matmul.allow_tf32 = True
