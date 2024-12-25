@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from typing import TypedDict
 
 import torch
+import numpy as np
 
 from chemprojector.chem.fpindex import FingerprintIndex
 from chemprojector.chem.mol import Molecule
@@ -63,7 +64,7 @@ def featurize_stack_actions(
     feats = {
         "token_types": torch.zeros([seq_len], dtype=torch.long),
         "rxn_indices": torch.zeros([seq_len], dtype=torch.long),
-        "reactant_fps": torch.zeros([seq_len, fp_dim], dtype=torch.float),
+        "reactant_fps": torch.zeros([seq_len, fp_dim], dtype=torch.float32),
         "token_padding_mask": torch.zeros([seq_len], dtype=torch.bool),
     }
     feats["token_types"][0] = TokenType.START
@@ -74,6 +75,8 @@ def featurize_stack_actions(
         elif mol_idx is not None:
             feats["token_types"][i] = TokenType.REACTANT
             _, mol_fp = fpindex[mol_idx]
+            if mol_fp.dtype == np.uint8:
+                mol_fp = mol_fp.astype(np.float32)
             feats["reactant_fps"][i] = torch.from_numpy(mol_fp)
     return feats
 

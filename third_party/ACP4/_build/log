@@ -1,0 +1,16 @@
+# dune build @install -j 16
+# OCAMLPARAM: unset
+# Shared cache: enabled-except-user-rules
+# Shared cache location: /home/sdivita/.cache/dune/db
+# Workspace root:
+# /usr/itetnas04/data-scratch-01/sdivita/data/originale/ChemProjector/third_party/ACP4
+# Dune context:
+#  { name = "default"
+#  ; kind = "default"
+#  ; profile = Dev
+#  ; merlin = true
+#  ; fdo_target_exe = None
+#  ; build_dir = In_build_dir "default"
+#  ; instrument_with = []
+#  }
+$ /home/sdivita/.opam/5.1.0/bin/ocamlc.opt -config > /tmp/dune_6a34ef_output

@@ -21,6 +21,10 @@ from .collate import (
 )
 from .common import ProjectionBatch, ProjectionData, create_data
 
+import sys
+from chemprojector.chem.fpindex import FingerprintIndex
+sys.modules['__main__'].FingerprintIndex = FingerprintIndex
+
 
 class Collater:
     def __init__(self, max_num_atoms: int = 96, max_smiles_len: int = 192, max_num_tokens: int = 24):

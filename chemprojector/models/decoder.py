@@ -8,7 +8,7 @@ from chemprojector.data.common import TokenType
 from chemprojector.models.transformer.positional_encoding import PositionalEncoding
 
 
-def _SimpleMLP(dim_in: int, dim_out: int, dim_hidden: int) -> Callable[[torch.Tensor], torch.Tensor]:
+def _SimpleMLP(dim_in: int, dim_out: int, dim_hidden: int) -> nn.Sequential:
     return nn.Sequential(
         nn.Linear(dim_in, dim_hidden),
         nn.ReLU(),
@@ -27,8 +27,8 @@ class Decoder(nn.Module):
         num_layers: int = 6,
         pe_max_len: int = 32,
         output_norm: bool = False,
-        fingerprint_dim: int = 256,
-        dim_fp_embed_hidden: int = 512,
+        fingerprint_dim: int = 512, #48000
+        dim_fp_embed_hidden: int = 256, #2048
         num_reaction_classes: int = 100,
     ):
         super().__init__()

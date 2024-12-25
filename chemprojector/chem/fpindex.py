@@ -30,14 +30,34 @@ def _fill_fingerprint(
     fp_option: FingerprintOption,
 ):
     os.sched_setaffinity(0, range(os.cpu_count() or 1))
+    
+    # Process molecules one at a time to control memory usage
     for i, mol in enumerate(molecules):
-        fp[offset + i] = mol.get_fingerprint(fp_option).astype(np.uint8)
+        print(f"\nDEBUG _fill_fingerprint:")
+        print(f"Molecule type: {type(mol)}")
+        print(f"RDMol type: {type(mol._rdmol)}")
+        try:
+            print("About to compute fingerprint...")
+            fingerprint = mol.get_fingerprint(fp_option).astype(np.uint8)
+            print("Fingerprint computed successfully")
+            fp[offset + i] = fingerprint
+            del fingerprint  # Explicitly delete to free memory
+        except Exception as e:
+            print(f"Failed to process molecule at index {offset + i}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            continue
+        
+        # Periodically force garbage collection
+        if (i + 1) % 32 == 0:
+            import gc
+            gc.collect()
 
 
 def compute_fingerprints(
     molecules: Sequence[Molecule],
     fp_option: FingerprintOption,
-    batch_size: int = 1024,
+    batch_size: int = 256,
 ) -> np.ndarray:
     with tempfile.TemporaryDirectory() as tempdir_s:
         temp_fname = pathlib.Path(tempdir_s) / "fingerprint"
@@ -47,15 +67,33 @@ def compute_fingerprints(
             mode="w+",
             shape=(len(molecules), fp_option.dim),
         )
-        joblib.Parallel(n_jobs=joblib.cpu_count() // 2)(
-            joblib.delayed(_fill_fingerprint)(
-                fp=fp,
-                offset=start,
-                molecules=molecules[start : start + batch_size],
-                fp_option=fp_option,
-            )
-            for start in tqdm(range(0, len(molecules), batch_size), desc="Fingerprint")
+        
+        parallel = joblib.Parallel(
+            n_jobs=joblib.cpu_count() // 2,
+            timeout=300,
+            max_nbytes=None,
         )
+        
+        try:
+            parallel(
+                joblib.delayed(_fill_fingerprint)(
+                    fp=fp,
+                    offset=start,
+                    molecules=molecules[start : start + batch_size],
+                    fp_option=fp_option,
+                )
+                for start in tqdm(range(0, len(molecules), batch_size), desc="Fingerprint")
+            )
+        except Exception as e:
+            print(f"WARNING: Parallel processing failed ({str(e)}), falling back to sequential processing")
+            for start in tqdm(range(0, len(molecules), batch_size), desc="Fingerprint (sequential)"):
+                _fill_fingerprint(
+                    fp=fp,
+                    offset=start,
+                    molecules=molecules[start : start + batch_size],
+                    fp_option=fp_option,
+                )
+        
         return np.array(fp)
 
 
@@ -148,9 +186,18 @@ def create_fingerprint_index_cache(
     molecule_path: pathlib.Path,
     cache_path: pathlib.Path,
     fp_option: FingerprintOption,
-):
-    mols = list(read_mol_file(molecule_path))
+) -> FingerprintIndex:
+    if cache_path.exists():
+        print(f"Loading cached index from {cache_path}")
+        with open(cache_path, "rb") as f:
+            return pickle.load(f)
+    
+    print(f"Creating new fingerprint index from {molecule_path}")
+    mols = list(read_mol_file(molecule_path, fp_option=fp_option))
     fpindex = FingerprintIndex(mols, fp_option=fp_option)
+    
+    print(f"Saving index to {cache_path}")
     with open(cache_path, "wb") as f:
         pickle.dump(fpindex, f)
+    
     return fpindex

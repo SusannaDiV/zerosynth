@@ -34,7 +34,7 @@ def draw_text(
 ) -> Image.Image:
     image = Image.new("RGB", (W, H), color=bg_color)
     draw = ImageDraw.Draw(image)
-    font = ImageFont.truetype("Pillow/Tests/fonts/FreeMono.ttf", size)
+    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf", size)
     _, _, w, h = draw.textbbox((0, 0), message, font=font)
     draw.text(((W - w) / 2, (H - h) / 2), message, font=font)
     return image

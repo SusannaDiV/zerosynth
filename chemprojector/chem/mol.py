@@ -28,12 +28,21 @@ class FingerprintOption:
     morgan_n_bits: int = 256
     # RDKit
     rdkit_fp_size: int = 2048
+    # Ph4
+    ph4_dim: int = 840
 
     def __post_init__(self):
-        supported_types = ("morgan", "rdkit", "gobbi_pharm2d")
+        supported_types = ("ph4", "morgan", "rdkit", "gobbi_pharm2d")
         if self.type not in supported_types:
             raise ValueError(f"Unsupported fingerprint type: {self.type}")
 
+    @classmethod
+    def ph4(cls):
+        return FingerprintOption(
+            type="ph4",
+            ph4_dim=840,
+        )
+    
     @classmethod
     def morgan_for_tanimoto_similarity(cls):
         return FingerprintOption(
@@ -64,6 +73,8 @@ class FingerprintOption:
 
     @property
     def dim(self) -> int:
+        if self.type == "ph4":
+            return self.ph4_dim
         if self.type == "morgan":
             return self.morgan_n_bits
         elif self.type == "rdkit":
@@ -74,26 +85,24 @@ class FingerprintOption:
 
 
 class Molecule(Drawable):
-    def __init__(self, smiles: str) -> None:
+    def __init__(self, smiles: str, rdmol=None) -> None:
         super().__init__()
         self._smiles = smiles.strip()
-
-    @classmethod
-    def from_rdmol(cls, rdmol: Chem.Mol) -> "Molecule":
-        return cls(Chem.MolToSmiles(rdmol))
-
-    def __getstate__(self):
-        return self._smiles
-
-    def __setstate__(self, state):
-        self._smiles = state
-
+        self._original_rdmol = rdmol
+        
     @property
     def smiles(self) -> str:
         return self._smiles
 
+    @classmethod
+    def from_rdmol(cls, rdmol: Chem.Mol) -> "Molecule":
+        smiles = Chem.MolToSmiles(rdmol, canonical=True)
+        return cls(smiles, rdmol=rdmol)
+
     @cached_property
     def _rdmol(self):
+        if self._original_rdmol is not None:
+            return self._original_rdmol
         return Chem.MolFromSmiles(self._smiles)
 
     @cached_property
@@ -163,12 +172,12 @@ class Molecule(Drawable):
     @overload
     def get_fingerprint(self, option: FingerprintOption, as_bitvec: Literal[False]) -> np.ndarray: ...
 
-    def get_fingerprint(self, option: FingerprintOption, as_bitvec: bool = False):
-        return self._get_fingerprint(option, as_bitvec)  # work-around for mypy check
-
     @cache
-    def _get_fingerprint(self, option: FingerprintOption, as_bitvec: bool):
-        if option.type == "morgan":
+    def get_fingerprint(self, option: FingerprintOption, as_bitvec: bool = False):
+        if option.type == "ph4":
+            from .allinacp4_ph4 import compute_fingerprint_from_mol
+            return compute_fingerprint_from_mol(self._rdmol).flatten()
+        elif option.type == "morgan":
             bit_vec = AllChem.GetMorganFingerprintAsBitVect(self._rdmol, option.morgan_radius, option.morgan_n_bits)
         elif option.type == "rdkit":
             bit_vec = Chem.RDKFingerprint(self._rdmol, fpSize=option.rdkit_fp_size)
@@ -202,13 +211,27 @@ class Molecule(Drawable):
         fp2 = other.get_fingerprint(fp_option, as_bitvec=True)
         return DataStructs.DiceSimilarity(fp1, fp2)
 
+    def manhattan_similarity(self, other: "Molecule", fp_option: FingerprintOption) -> float:
+        """Manhattan similarity for ph4 fingerprints"""
+        if fp_option.type != "ph4":
+            raise ValueError("Manhattan similarity is only supported for ph4 fingerprints")
+        
+        fp1 = self.get_fingerprint(fp_option, as_bitvec=False)
+        fp2 = other.get_fingerprint(fp_option, as_bitvec=False)
+        manhattan_dist = np.sum(np.abs(fp1 - fp2))
+        max_possible_dist = np.sum(np.maximum(fp1, fp2))  # Normalize by maximum possible distance
+        return 1 - (manhattan_dist / max_possible_dist if max_possible_dist > 0 else 0)
+
     @cache
     def sim(
         self,
         other: "Molecule",
         fp_option: FingerprintOption = FingerprintOption.morgan_for_tanimoto_similarity(),
     ) -> float:
-        return self.tanimoto_similarity(other, fp_option)
+        if fp_option.type == "ph4":
+            return self.manhattan_similarity(other, fp_option)
+        else:
+            return self.tanimoto_similarity(other, fp_option)
 
     @cached_property
     def csmiles_md5(self) -> bytes:
@@ -226,10 +249,14 @@ def read_mol_file(
     show_pbar: bool = True,
     smiles_col: str | None = None,
     pbar_fn=partial(tqdm, desc="Reading"),
+    fp_option: FingerprintOption | None = None,
 ) -> Iterable[Molecule]:
     path = pathlib.Path(path)
     if path.suffix == ".sdf":
-        f = Chem.SDMolSupplier(str(path))
+        if fp_option and fp_option.type == "ph4":
+            f = Chem.SDMolSupplier(str(path), removeHs=False)
+        else:
+            f = Chem.SDMolSupplier(str(path))
     elif path.suffix == ".smi":
         f = Chem.SmilesMolSupplier(str(path))
     elif path.suffix == ".csv":

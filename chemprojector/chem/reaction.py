@@ -3,8 +3,8 @@ from collections.abc import Iterable, Sequence
 from functools import cached_property
 from typing import overload
 
+from rdkit import Chem
 from rdkit.Chem import AllChem, Draw, rdChemReactions
-
 from .base import Drawable
 from .mol import Molecule
 
@@ -35,7 +35,24 @@ class Template(Drawable):
             return Draw.MolToImage(self._rdmol, size=(size, size), kekulize=True)
 
     def match(self, mol: Molecule) -> bool:
-        return mol._rdmol.HasSubstructMatch(self._rdmol)
+        # First try with the original 3D molecule
+        try:
+            mol._rdmol.UpdatePropertyCache(strict=False)
+            if mol._rdmol.HasSubstructMatch(self._rdmol):
+                return True
+        except:
+            pass
+        
+        # Fallback to 2D representation
+        mol2d = Chem.MolFromSmiles(mol.smiles, sanitize=True)
+        if mol2d is None:
+            return False
+        try:
+            mol2d.UpdatePropertyCache(strict=False)
+            Chem.SanitizeMol(mol2d)
+            return mol2d.HasSubstructMatch(self._rdmol)
+        except:
+            return False
 
     def __hash__(self) -> int:
         return hash(self._smarts)
@@ -107,9 +124,36 @@ class Reaction(Drawable):
         return self._reaction.IsMoleculeProduct(mol._rdmol)
 
     def __call__(self, reactants: Sequence[Molecule]) -> list[Molecule]:
-        products = [Molecule.from_rdmol(p[0]) for p in self._reaction.RunReactants([m._rdmol for m in reactants])]
-        products = [p for p in products if p.is_valid]
-        return products
+        # Prepare reactants by updating valence and H counts
+        prepared_reactants = []
+        for mol in reactants:
+            try:
+                rdmol = mol._rdmol
+                rdmol.UpdatePropertyCache(strict=False)
+                Chem.AssignStereochemistry(rdmol, force=True, cleanIt=True)
+                prepared_reactants.append(rdmol)
+            except Exception as e:
+                print(f"Failed to prepare reactant: {e}")
+                return []
+        
+        try:
+            products = []
+            for product_tuple in self._reaction.RunReactants(prepared_reactants):
+                try:
+                    # ACP4 has issues with implicit hydrogens, needs to apply RDKit sanitization explicitly
+                    for p in product_tuple:
+                        p.UpdatePropertyCache(strict=False)
+                        Chem.SanitizeMol(p)
+                        mol = Molecule.from_rdmol(p)
+                        if mol.is_valid:
+                            products.append(mol)
+                except Exception as e:
+                    print(f"Failed to process product: {e}")
+                    continue
+            return products
+        except Exception as e:
+            print(f"Failed to run reaction: {e}")
+            return []
 
     def __hash__(self) -> int:
         return hash(self._smarts)

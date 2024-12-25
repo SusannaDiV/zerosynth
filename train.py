@@ -24,9 +24,10 @@ torch.set_float32_matmul_precision("medium")
 @click.argument("config_path", type=click.Path(exists=True))
 @click.option("--seed", type=int, default=42)
 @click.option("--debug", is_flag=True)
-@click.option("--batch-size", "-b", type=int, default=256)
-@click.option("--num-workers", type=int, default=4)
-@click.option("--devices", type=int, default=4)
+# MOdified the upcoming 3 lines
+@click.option("--batch-size", "-b", type=int, default=4)
+@click.option("--num-workers", type=int, default=1)
+@click.option("--devices", type=int, default=1)
 @click.option("--num-nodes", type=int, default=int(os.environ.get("NUM_NODES", 1)))
 @click.option("--num-sanity-val-steps", type=int, default=1)
 @click.option("--log-dir", type=click.Path(dir_okay=True, file_okay=False), default="./logs")
@@ -77,7 +78,7 @@ def main(
         num_sanity_val_steps=num_sanity_val_steps,
         gradient_clip_val=config.train.max_grad_norm,
         log_every_n_steps=1,
-        max_steps=config.train.max_iters,
+        max_steps=10 if debug else config.train.max_iters,
         callbacks=[
             callbacks.ModelCheckpoint(save_last=True, monitor="val/loss", mode="min", save_top_k=5),
             callbacks.LearningRateMonitor(logging_interval="step"),
@@ -85,8 +86,9 @@ def main(
         logger=[
             loggers.TensorBoardLogger(log_dir, name=exp_name, version=exp_ver),
         ],
-        val_check_interval=config.train.val_freq,
-        limit_val_batches=4,
+        val_check_interval=1 if debug else config.train.val_freq,
+        limit_val_batches=2,
+        limit_train_batches=3 if debug else None,
     )
     trainer.fit(model, datamodule=datamodule, ckpt_path=resume)
 

@@ -2,11 +2,10 @@ version: 2
 
 chem:
   fp_option:
-    type: morgan
-    morgan_radius: 2
-    morgan_n_bits: 256
+    type: ph4
+    ph4_dim: 840
   rxn_matrix: data/processed/all/matrix.pkl
-  fpindex: data/processed/all/fpindex.pkl
+  fpindex: data/processed/all/fpindex_ph4_new.pkl
 
 data:
   init_stack_weighted_ratio: 0.90
@@ -31,7 +30,7 @@ model:
     num_layers: 6
     pe_max_len: 32
     output_norm: false
-    fingerprint_dim: ${chem.fp_option.morgan_n_bits}
+    fingerprint_dim: ${chem.fp_option.ph4_dim}
     dim_fp_embed_hidden: 256
     num_reaction_classes: 100
 
@@ -43,7 +42,7 @@ model:
   fingerprint_head:
     d_model: 512
     num_out_fingerprints: 4
-    fingerprint_dim: ${chem.fp_option.morgan_n_bits}
+    fingerprint_dim: ${chem.fp_option.ph4_dim}
     dim_hidden: 512
     warmup_prob: 0.01
 

@@ -1,0 +1,7 @@
+(lang dune 3.17)
+(name acp4)
+(sections (lib .) (bin ../../bin) (doc ../../doc/acp4))
+(files
+ (lib (META dune-package opam))
+ (bin (acp4 acp4_assign acp4_mst acp4_scissors))
+ (doc (LICENSE README.md)))

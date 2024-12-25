@@ -26,7 +26,7 @@ _default_sdf_path = pathlib.Path("data/Enamine_Rush-Delivery_Building_Blocks-US_
 @click.option(
     "--out",
     type=click.Path(path_type=pathlib.Path),
-    default=pathlib.Path("data/processed/split/matrix_train.pkl"),
+    default=pathlib.Path("data/processed/split/matrix_train_ph4.pkl"),
 )
 def matrix(reactant: pathlib.Path, reaction: pathlib.Path, exclude: pathlib.Path, out: pathlib.Path):
     if out.exists():

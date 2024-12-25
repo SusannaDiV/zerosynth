@@ -89,7 +89,7 @@ Please refer to the `scripts/goal_directed` directory for details.
 ### Train
 
 ```bash
-python train.py ./configs/original_default.yml
+python train.py ./configs/original_default.yml --debug
 ```
 
 ## Reference
