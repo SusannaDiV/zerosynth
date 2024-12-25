@@ -14,6 +14,11 @@ from chemprojector.utils.misc import (
     get_experiment_version,
 )
 from chemprojector.utils.vc import get_vc_info
+import warnings
+import logging
+
+warnings.filterwarnings("ignore", category=UserWarning, module="rdkit")
+logging.getLogger().setLevel(logging.ERROR)
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
