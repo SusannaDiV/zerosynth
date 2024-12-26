@@ -3,13 +3,14 @@ import pickle as pkl
 from shape_utils import get_atom_stamp, get_shape, ROTATIONS, centralize, get_mol_centroid, trans, get_binary_features
 from tfbio_data import make_grid
 from rdkit import Chem
-from rdkit.Chem import rdMolTransforms, AllChem
+from rdkit.Chem import rdMolTransforms
 import copy
 from random import sample
 import numpy as np
 import subprocess
 from shape_pretraining_dataset import ShapePretrainingDataset
 from tqdm.auto import tqdm
+from rdkit.Chem import AllChem
 
 
 def sdf_to_pdb(sdf_path, output_dir):
@@ -81,11 +82,12 @@ def run_fpocket(pdb_file):
     mol_pocket_dir = os.path.join(fpocket_output_dir, base_name + "_out")
     os.makedirs(mol_pocket_dir, exist_ok=True)
     
+    # Run fpocket
     cmd = f"fpocket -f {pdb_file}"
     subprocess.run(cmd, shell=True, check=True)
     
     print(f"fpocket analysis complete for {pdb_file}")
-    return mol_pocket_dir  
+    return mol_pocket_dir  # Return the output directory
 
 
 def select_largest_pocket(fpocket_out_dir):
@@ -110,6 +112,7 @@ def select_largest_pocket(fpocket_out_dir):
         if largest_pocket is None:
             raise ValueError("No pockets found in fpocket output.")
             
+        # Use relative path within fpocket output directory
         pocket_file = os.path.join(fpocket_out_dir, f"pockets/pocket{largest_pocket}_atm.pdb")
         if not os.path.exists(pocket_file):
             raise FileNotFoundError(f"Pocket file not found: {pocket_file}")
@@ -121,6 +124,7 @@ def select_largest_pocket(fpocket_out_dir):
         return None
 
 
+# File paths
 data_path = '/itet-stor/sdivita/net_scratch/originale/ChemProjector/chemprojector/models/encoder/data/training_data.pkl'
 input_sdf = "/itet-stor/sdivita/net_scratch/originale/ChemProjector/data/Enamine_Rush-Delivery_Building_Blocks-US_249948cmpd_20241108.sdf"
 output_dir = "/itet-stor/sdivita/net_scratch/originale/ChemProjector/chemprojector/models/encoder/data/molecules"
@@ -130,65 +134,18 @@ print("Loading training data...")
 with open(data_path, 'rb') as fr:
     data = pkl.load(fr)
 
-os.makedirs(output_dir, exist_ok=True)
-os.makedirs(fpocket_output_dir, exist_ok=True)
-
-supplier = Chem.SDMolSupplier(input_sdf)
-first_5_mols = []
-for i, mol in enumerate(supplier):
-    if i >= 5:  
-        break
-    if mol is not None:
-        first_5_mols.append(mol)
-
-print(f"Processing {len(first_5_mols)} molecules...")
-
-molecule_pdbs = []
-for idx, mol in enumerate(first_5_mols):
-    try:
-        conf = mol.GetConformer()
-        positions = conf.GetPositions()
-        is_2d = all(pos[2] == 0 for pos in positions)
-        
-        if is_2d:
-            print(f"Molecule {idx} is 2D, generating 3D conformer...")
-            mol = Chem.AddHs(mol)
-            AllChem.EmbedMolecule(mol, randomSeed=42)
-            AllChem.MMFFOptimizeMolecule(mol)
-            mol = Chem.RemoveHs(mol)
-        
-        pdb_path = os.path.join(output_dir, f"molecule_{idx}.pdb")
-        
-        # Write PDB file
-        pdb_lines = []
-        conf = mol.GetConformer()
-        for i, atom in enumerate(mol.GetAtoms()):
-            pos = conf.GetAtomPosition(i)
-            line = (f"ATOM  {i+1:5d}  {atom.GetSymbol():<3}{' ':1}{'LIG':3} {'A':1}{1:4d}"
-                   f"{' ':4}{pos.x:8.3f}{pos.y:8.3f}{pos.z:8.3f}{1.00:6.2f}{0.00:6.2f}"
-                   f"{' ':10}{atom.GetSymbol():>2}{' ':2}\n")
-            pdb_lines.append(line)
-        pdb_lines.append("TER\nEND\n")
-        
-        with open(pdb_path, 'w') as f:
-            f.writelines(pdb_lines)
-        
-        molecule_pdbs.append(pdb_path)
-        print(f"Successfully wrote {pdb_path}")
-        
-    except Exception as e:
-        print(f"Failed to process molecule {idx}: {e}")
-        continue
+molecule_pdbs = sdf_to_pdb(input_sdf, output_dir)
 
 all_sample_shapes = []
 all_sample_n_o_f = []
 
+os.makedirs(output_dir, exist_ok=True)
+os.makedirs(fpocket_output_dir, exist_ok=True)
+
 for protein_pdb in tqdm(molecule_pdbs, desc="Processing molecules"):
     try:
-        # Step 2: Run fpocket for this molecule
         fpocket_out_dir = run_fpocket(protein_pdb)
         
-        # Step 3: Select the largest pocket
         cavity_pdb = select_largest_pocket(fpocket_out_dir)
         if cavity_pdb is None:
             print(f"Skipping {protein_pdb} - no valid pockets found")

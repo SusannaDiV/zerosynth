@@ -91,11 +91,18 @@ class FingerprintOption:
 
 
 class Molecule(Drawable):
-    def __init__(self, smiles: str, rdmol=None) -> None:
-        super().__init__()
-        self._smiles = smiles.strip()
-        self._original_rdmol = rdmol
-        
+    def __init__(self, smiles: str = None, rdmol = None):
+        """Initialize Molecule with either SMILES or RDKit Mol object"""
+        if rdmol is not None:
+            self._rdmol = rdmol
+        elif smiles is not None:
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                raise ValueError(f"Invalid SMILES string: {smiles}")
+            self._rdmol = mol
+        else:
+            raise ValueError("Either smiles or rdmol must be provided")
+
     @property
     def smiles(self) -> str:
         return self._smiles
@@ -104,6 +111,21 @@ class Molecule(Drawable):
     def from_rdmol(cls, rdmol: Chem.Mol) -> "Molecule":
         smiles = Chem.MolToSmiles(rdmol, canonical=True)
         return cls(smiles, rdmol=rdmol)
+
+    @classmethod
+    def from_smiles(cls, smiles: str) -> 'Molecule':
+        """Create a Molecule instance from SMILES string"""
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            raise ValueError(f"Invalid SMILES string: {smiles}")
+            
+        # Generate 3D conformer
+        mol = Chem.AddHs(mol)
+        AllChem.EmbedMolecule(mol, randomSeed=42)
+        AllChem.MMFFOptimizeMolecule(mol)
+        
+        # Create Molecule instance
+        return cls(rdmol=mol)
 
     @cached_property
     def _rdmol(self):
@@ -148,23 +170,29 @@ class Molecule(Drawable):
         return self
 
     def featurize_simple(self) -> tuple[torch.Tensor, torch.Tensor]:
-        mol = self._rdmol_no_hs
-        atoms = mol.GetAtoms()
-
-        atom_f = torch.zeros([len(atoms)], dtype=torch.long)
-        bond_f = torch.zeros([len(atoms), len(atoms)], dtype=torch.long)
-
-        for atom in atoms:
-            idx = atom.GetIdx()
-            atom_f[idx] = atom_features_simple(atom)
-            for atom_j in atoms:
-                jdx = atom_j.GetIdx()
-                bond = mol.GetBondBetweenAtoms(idx, jdx)
-                if bond is None:
-                    continue
-                bond_f[idx, jdx] = bond_features_simple(bond)
-
-        return atom_f, bond_f
+        """Generate simple atom and bond features"""
+        # Basic atom features
+        atom_features = []
+        for atom in self._rdmol.GetAtoms():
+            features = [
+                atom.GetAtomicNum(),
+                atom.GetTotalDegree(),
+                atom.GetFormalCharge(),
+                int(atom.GetIsAromatic())
+            ]
+            atom_features.append(features)
+            
+        # Basic bond features
+        bond_features = []
+        for bond in self._rdmol.GetBonds():
+            features = [
+                bond.GetBondTypeAsDouble(),
+                int(bond.GetIsAromatic()),
+                int(bond.IsInRing())
+            ]
+            bond_features.append(features)
+            
+        return atom_features, bond_features
 
     def tokenize_csmiles(self) -> torch.Tensor:
         return torch.tensor(tokenize_smiles(self.csmiles), dtype=torch.long)
