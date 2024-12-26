@@ -6,25 +6,23 @@ chem:
     ph4_dim: 840
   rxn_matrix: data/processed/all/matrix_ph4_ultimo.pkl
   fpindex: data/processed/all/fpindex_ph4_ultimo.pkl
+  shape_dataset: /itet-stor/sdivita/net_scratch/originale/ChemProjector/chemprojector/data/processed/all/shape_dataset.pkl
 
 data:
   init_stack_weighted_ratio: 0.90
+  patch_size: 3
 
 model:
-  encoder_type: graph
+  encoder_type: shape
   encoder:
-    num_atom_classes: 100
-    num_bond_classes: 10
-    dim: 512
-    depth: 8
-    dim_head: 64
-    edge_dim: 128
-    heads: 8
-    rel_pos_emb: false
-    output_norm: false
+    patch_size: 3
+    d_model: 256
+    nhead: 8
+    num_layers: 6
+    max_seq_length: 3000
   
   decoder:
-    d_model: 512
+    d_model: 256
     nhead: 8
     dim_feedforward: 2048
     num_layers: 6

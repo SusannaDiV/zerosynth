@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 import torch
 from torch import nn
 
-from chemprojector.data.common import ProjectionBatch
+from chemprojector.data.common import ProjectionBatch, ShapeBatch
 from chemprojector.models.transformer.graph_transformer import GraphTransformer
 from chemprojector.models.transformer.positional_encoding import PositionalEncoding
 
@@ -138,11 +138,12 @@ class ShapeEncoder(BaseEncoder):
     def dim(self) -> int:
         return self._dim
 
-    def forward(self, batch: ProjectionBatch) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, batch: ShapeBatch) -> tuple[torch.Tensor, torch.Tensor]:
         if "shape_patches" not in batch:
             raise ValueError("shape_patches must be in batch")
             
         shape_patches = batch["shape_patches"]
+        padding_mask = batch.get("shape_padding_mask", None)
         bz, sl, _ = shape_patches.size()
         
         x = self._patch_ffn(shape_patches)
@@ -150,26 +151,32 @@ class ShapeEncoder(BaseEncoder):
         if sl > self._pos_embed.size(1):
             raise ValueError(f"Sequence length {sl} exceeds positional embedding size {self._pos_embed.size(1)}")
         
-        pos = torch.arange(sl).unsqueeze(0).repeat(bz, 1).to(x.device)
         x = x + self._pos_embed[:, :sl]
         x = self._embed_dropout(x)
         
-        # Create padding mask (assuming no padding for now)
-        padding_mask = torch.zeros((bz, sl), dtype=torch.bool, device=x.device)
+        if padding_mask is None:
+            padding_mask = torch.zeros((bz, sl), dtype=torch.bool, device=x.device)
         
         x = x.transpose(0, 1)  # Transformer expects (seq_len, batch, d_model)
-        x = self._transformer(x)
+        x = self._transformer(x, src_key_padding_mask=padding_mask)
         x = self._norm(x)
         x = x.transpose(0, 1)  # Convert back to (batch, seq_len, d_model)
         
-        return x, padding_mask 
+        return x, padding_mask
 
-def get_encoder(t: str, cfg) -> BaseEncoder:
+def get_encoder(t: str, cfg: dict) -> BaseEncoder:
     if t == "smiles":
         return SMILESEncoder(**cfg)
     elif t == "graph":
         return GraphEncoder(**cfg)
     elif t == "shape":
-        return ShapeEncoder(**cfg)
+        shape_cfg = {
+            "patch_size": cfg.get("patch_size", 3),
+            "d_model": cfg.get("d_model", 256),
+            "nhead": cfg.get("nhead", 8),
+            "num_layers": cfg.get("num_layers", 6),
+            "max_seq_length": cfg.get("max_seq_length", 3000)
+        }
+        return ShapeEncoder(**shape_cfg)
     else:
         raise ValueError(f"Unknown encoder type: {t}")

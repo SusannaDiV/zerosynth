@@ -5,12 +5,13 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf
+import torch.nn as nn
 
 from chemprojector.chem.fpindex import FingerprintIndex
 from chemprojector.chem.matrix import ReactantReactionMatrix
 from chemprojector.data.common import ProjectionBatch, draw_batch
 from chemprojector.utils.train import get_optimizer, get_scheduler, sum_weighted_losses
-
+from .encoder import get_encoder
 from .chemprojector import ChemProjector, draw_generation_results
 
 
@@ -25,7 +26,14 @@ class ChemProjectorWrapper(pl.LightningModule):
                 "args": args or {},
             }
         )
-        self.model = ChemProjector(config.model)
+        
+        if config.model.encoder_type == "shape":
+            self.encoder = get_encoder(config.model.encoder_type, config.model.encoder)
+            self.patch_decoder = nn.Linear(256, 27)
+            self.is_shape_model = True
+        else:
+            self.model = ChemProjector(config.model)
+            self.is_shape_model = False
 
     @property
     def config(self):
@@ -37,68 +45,102 @@ class ChemProjectorWrapper(pl.LightningModule):
 
     def setup(self, stage: str) -> None:
         super().setup(stage)
+        
+        # Only load chem data for non-shape models
+        if not self.is_shape_model:
+            with open(self.config.chem.rxn_matrix, "rb") as f:
+                self.rxn_matrix: ReactantReactionMatrix = pickle.load(f)
 
-        # Load chem data
-        with open(self.config.chem.rxn_matrix, "rb") as f:
-            self.rxn_matrix: ReactantReactionMatrix = pickle.load(f)
-
-        with open(self.config.chem.fpindex, "rb") as f:
-            self.fpindex: FingerprintIndex = pickle.load(f)
+            with open(self.config.chem.fpindex, "rb") as f:
+                self.fpindex: FingerprintIndex = pickle.load(f)
 
     def configure_optimizers(self):
-        optimizer = get_optimizer(self.config.train.optimizer, self.model)
-        if "scheduler" in self.config.train:
-            scheduler = get_scheduler(self.config.train.scheduler, optimizer)
+        if self.is_shape_model:
+            optimizer = torch.optim.AdamW(
+                self.parameters(),
+                lr=self.config.train.optimizer.lr,
+                weight_decay=self.config.train.optimizer.weight_decay,
+            )
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode='min',
+                factor=self.config.train.scheduler.factor,
+                patience=self.config.train.scheduler.patience,
+                min_lr=self.config.train.scheduler.min_lr
+            )
             return {
                 "optimizer": optimizer,
                 "lr_scheduler": scheduler,
-                "monitor": "val/loss",
+                "monitor": "val/loss"
             }
-        return optimizer
+        else:
+            optimizer = get_optimizer(self.config.train.optimizer, self.model)
+            if "scheduler" in self.config.train:
+                scheduler = get_scheduler(self.config.train.scheduler, optimizer)
+                return {
+                    "optimizer": optimizer,
+                    "lr_scheduler": scheduler,
+                    "monitor": "val/loss",
+                }
+            return optimizer
 
-    def training_step(self, batch: ProjectionBatch, batch_idx: int):
-        loss_dict, aux_dict = self.model.get_loss_shortcut(batch, warmup=self.current_epoch == 0)
-        loss_sum = sum_weighted_losses(loss_dict, self.config.train.loss_weights)
+    def training_step(self, batch, batch_idx: int):
+        if self.is_shape_model:
+            encoded, padding_mask = self.encoder(batch)
+            decoded = self.patch_decoder(encoded)
+            loss = torch.nn.functional.mse_loss(decoded, batch["shape_patches"])
+            self.log("train/loss", loss, on_step=True, prog_bar=True, logger=True)
+            return loss
+        else:
+            loss_dict, aux_dict = self.model.get_loss_shortcut(batch, warmup=self.current_epoch == 0)
+            loss_sum = sum_weighted_losses(loss_dict, self.config.train.loss_weights)
 
-        self.log("train/loss", loss_sum, on_step=True, prog_bar=True, logger=True)
-        self.log_dict({f"train/loss_{k}": v for k, v in loss_dict.items()}, on_step=True, logger=True)
+            self.log("train/loss", loss_sum, on_step=True, prog_bar=True, logger=True)
+            self.log_dict({f"train/loss_{k}": v for k, v in loss_dict.items()}, on_step=True, logger=True)
 
-        if "fp_select" in aux_dict:
-            fp_select: torch.Tensor = aux_dict["fp_select"]
-            fp_ratios: dict[str, float] = {}
-            for i in range(int(fp_select.max().item()) + 1):
-                ratio = (fp_select == i).float().mean().nan_to_num(0.0)
-                fp_ratios[f"fp_select/{i}"] = ratio.item()
-            self.log_dict(fp_ratios, on_step=True, logger=True)
-        return loss_sum
+            if "fp_select" in aux_dict:
+                fp_select: torch.Tensor = aux_dict["fp_select"]
+                fp_ratios: dict[str, float] = {}
+                for i in range(int(fp_select.max().item()) + 1):
+                    ratio = (fp_select == i).float().mean().nan_to_num(0.0)
+                    fp_ratios[f"fp_select/{i}"] = ratio.item()
+                self.log_dict(fp_ratios, on_step=True, logger=True)
+            return loss_sum
 
-    def validation_step(self, batch: ProjectionBatch, batch_idx: int) -> Any:
-        loss_dict, _ = self.model.get_loss_shortcut(batch)
-        loss_weight = self.config.train.get("val_loss_weights", self.config.train.loss_weights)
-        loss_sum = sum_weighted_losses(loss_dict, loss_weight)
+    def validation_step(self, batch, batch_idx: int) -> Any:
+        if self.is_shape_model:
+            encoded, padding_mask = self.encoder(batch)
+            decoded = self.patch_decoder(encoded)
+            loss = torch.nn.functional.mse_loss(decoded, batch["shape_patches"])
+            self.log("val/loss", loss, on_step=False, prog_bar=True, logger=True, sync_dist=True)
+            return loss
+        else:
+            loss_dict, _ = self.model.get_loss_shortcut(batch)
+            loss_weight = self.config.train.get("val_loss_weights", self.config.train.loss_weights)
+            loss_sum = sum_weighted_losses(loss_dict, loss_weight)
 
-        self.log("val/loss", loss_sum, on_step=False, prog_bar=True, logger=True, sync_dist=True)
-        self.log_dict({f"val/loss_{k}": v for k, v in loss_dict.items()}, on_step=False, logger=True, sync_dist=True)
+            self.log("val/loss", loss_sum, on_step=False, prog_bar=True, logger=True, sync_dist=True)
+            self.log_dict({f"val/loss_{k}": v for k, v in loss_dict.items()}, on_step=False, logger=True, sync_dist=True)
 
-        # Generate
-        if self.args.get("visualize", True) and batch_idx == 0:
-            result = self.model.generate_without_stack(batch=batch, rxn_matrix=self.rxn_matrix, fpindex=self.fpindex)
-            images_gen = draw_generation_results(result)
-            images_ref = draw_batch(batch)
-            if self.logger is not None:
-                tb_logger = self.logger.experiment
-                for i, (image_gen, image_ref) in enumerate(zip(images_gen, images_ref)):
-                    tb_logger.add_images(
-                        f"val/{i}_generate",
-                        np.array(image_gen) / 255,
-                        self.current_epoch,
-                        dataformats="HWC",
-                    )
-                    tb_logger.add_images(
-                        f"val/{i}_reference",
-                        np.array(image_ref) / 255,
-                        self.current_epoch,
-                        dataformats="HWC",
-                    )
+            # Generate
+            if self.args.get("visualize", True) and batch_idx == 0:
+                result = self.model.generate_without_stack(batch=batch, rxn_matrix=self.rxn_matrix, fpindex=self.fpindex)
+                images_gen = draw_generation_results(result)
+                images_ref = draw_batch(batch)
+                if self.logger is not None:
+                    tb_logger = self.logger.experiment
+                    for i, (image_gen, image_ref) in enumerate(zip(images_gen, images_ref)):
+                        tb_logger.add_images(
+                            f"val/{i}_generate",
+                            np.array(image_gen) / 255,
+                            self.current_epoch,
+                            dataformats="HWC",
+                        )
+                        tb_logger.add_images(
+                            f"val/{i}_reference",
+                            np.array(image_ref) / 255,
+                            self.current_epoch,
+                            dataformats="HWC",
+                        )
 
-        return loss_sum
+            return loss_sum

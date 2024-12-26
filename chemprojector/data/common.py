@@ -33,6 +33,9 @@ class ProjectionData(TypedDict, total=False):
     # Auxilliary
     mol_seq: Sequence[Molecule]
     rxn_seq: Sequence[Reaction | None]
+    shape: torch.Tensor
+    shape_patches: torch.Tensor
+    shape_padding_mask: torch.Tensor
 
 
 class ProjectionBatch(TypedDict, total=False):
@@ -49,6 +52,21 @@ class ProjectionBatch(TypedDict, total=False):
     # Auxilliary
     mol_seq: Sequence[Sequence[Molecule]]
     rxn_seq: Sequence[Sequence[Reaction | None]]
+    shape: torch.Tensor
+    shape_patches: torch.Tensor
+    shape_padding_mask: torch.Tensor
+
+
+class ShapeData(TypedDict, total=False):
+    shape: torch.Tensor  # The raw shape tensor
+    shape_patches: torch.Tensor  # Extracted patches
+    shape_padding_mask: torch.Tensor  # Padding mask for variable length sequences
+
+
+class ShapeBatch(TypedDict, total=False):
+    shape: torch.Tensor  # [batch_size, 21, 21, 21]
+    shape_patches: torch.Tensor  # [batch_size, num_patches, patch_size³]
+    shape_padding_mask: torch.Tensor  # [batch_size, num_patches]
 
 
 def featurize_stack_actions(
@@ -117,6 +135,9 @@ def create_data(
         "rxn_indices": stack_feats["rxn_indices"],
         "reactant_fps": stack_feats["reactant_fps"],
         "token_padding_mask": stack_feats["token_padding_mask"],
+        "shape": torch.zeros([1], dtype=torch.long),
+        "shape_patches": torch.zeros([1, 1], dtype=torch.float32),
+        "shape_padding_mask": torch.zeros([1], dtype=torch.bool),
     }
     return data
 

@@ -7,7 +7,10 @@ from omegaconf import OmegaConf
 from pytorch_lightning import callbacks, loggers, strategies
 
 from chemprojector.data.projection_dataset import ProjectionDataModule
+from chemprojector.data.shape_dataset import ShapeDataModule
 from chemprojector.models.wrapper import ChemProjectorWrapper
+from chemprojector.models.shape_wrapper import ShapeWrapper
+from chemprojector.models.encoder import get_encoder
 from chemprojector.utils.misc import (
     get_config_name,
     get_experiment_name,
@@ -58,15 +61,31 @@ def main(
     exp_name = get_experiment_name(config_name, vc_info.display_version, vc_info.committed_at)
     exp_ver = get_experiment_version()
 
-    # Dataloaders
-    datamodule = ProjectionDataModule(
-        config,
-        batch_size=batch_size_per_process,
-        num_workers=num_workers,
-        **config.data,
-    )
+    # Add path resolution for data files
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(config_path)))
+    if not os.path.isabs(config.chem.shape_dataset):
+        config.chem.shape_dataset = os.path.join(base_dir, config.chem.shape_dataset)
 
-    # Model
+    # Verify shape dataset exists
+    if not os.path.exists(config.chem.shape_dataset):
+        raise FileNotFoundError(f"Shape dataset not found at: {config.chem.shape_dataset}")
+
+    # Dataloaders
+    if config.model.encoder_type == "shape":
+        datamodule = ShapeDataModule(
+            data_path=config.chem.shape_dataset,
+            batch_size=batch_size_per_process,
+            num_workers=num_workers,
+            patch_size=config.data.patch_size
+        )
+    else:
+        datamodule = ProjectionDataModule(
+            config,
+            batch_size=batch_size_per_process,
+            num_workers=num_workers,
+            **config.data,
+        )
+
     model = ChemProjectorWrapper(config)
 
     # Train
