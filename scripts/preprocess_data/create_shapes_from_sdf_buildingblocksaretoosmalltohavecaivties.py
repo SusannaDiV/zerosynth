@@ -175,7 +175,7 @@ def is_molecule_suitable(mol):
     n_bonds = mol.GetNumBonds()
     n_rings = mol.GetRingInfo().NumRings()
     
-    # fpocket criteria for suitability:
+    # Criteria for suitability:
     # - At least 15 atoms
     # - At least 15 bonds
     # - At least 2 rings
@@ -204,15 +204,13 @@ for i, mol in enumerate(supplier):
 
 print(f"Processing {len(first_5_mols)} molecules...")
 
-all_sample_shapes = []
-all_sample_n_o_f = []
-
-output_data_dir = '/itet-stor/sdivita/net_scratch/originale/ChemProjector/chemprojector/data/processed/all'
-os.makedirs(output_data_dir, exist_ok=True)
-
+molecule_pdbs = []
 for idx, mol in enumerate(first_5_mols):
     try:
-        # Generate 3D conformer if needed
+        if not is_molecule_suitable(mol):
+            print(f"Molecule {idx} too small/simple for pocket detection, skipping...")
+            continue
+            
         conf = mol.GetConformer()
         positions = conf.GetPositions()
         is_2d = all(pos[2] == 0 for pos in positions)
@@ -223,24 +221,70 @@ for idx, mol in enumerate(first_5_mols):
             AllChem.EmbedMolecule(mol, randomSeed=42)
             AllChem.MMFFOptimizeMolecule(mol)
             mol = Chem.RemoveHs(mol)
+        
+        pdb_path = os.path.join(output_dir, f"molecule_{idx}.pdb")
+        
+        # Write PDB file
+        pdb_lines = []
+        conf = mol.GetConformer()
+        for i, atom in enumerate(mol.GetAtoms()):
+            pos = conf.GetAtomPosition(i)
+            line = (f"ATOM  {i+1:5d}  {atom.GetSymbol():<3}{' ':1}{'LIG':3} {'A':1}{1:4d}"
+                   f"{' ':4}{pos.x:8.3f}{pos.y:8.3f}{pos.z:8.3f}{1.00:6.2f}{0.00:6.2f}"
+                   f"{' ':10}{atom.GetSymbol():>2}{' ':2}\n")
+            pdb_lines.append(line)
+        pdb_lines.append("TER\nEND\n")
+        
+        with open(pdb_path, 'w') as f:
+            f.writelines(pdb_lines)
+        
+        molecule_pdbs.append(pdb_path)
+        print(f"Successfully wrote {pdb_path}")
+        
+    except Exception as e:
+        print(f"Failed to process molecule {idx}: {e}")
+        continue
+
+all_sample_shapes = []
+all_sample_n_o_f = []
+
+for protein_pdb in tqdm(molecule_pdbs, desc="Processing molecules"):
+    try:
+        # Step 2: Run fpocket for this molecule
+        fpocket_out_dir = run_fpocket(protein_pdb)
+        
+        # Step 3: Select the largest pocket
+        cavity_pdb = select_largest_pocket(fpocket_out_dir)
+        if cavity_pdb is None:
+            print(f"Skipping {protein_pdb} - no valid pockets found")
+            continue
+            
+        protein_pdb_final = protein_pdb
 
         atom_stamp = get_atom_stamp(grid_resolution=0.5, max_dist=4.0)
+
+        # Step 5: Load cavity and protein structures
+        cavity = Chem.MolFromPDBFile(cavity_pdb, proximityBonding=False)
+        protein = Chem.MolFromPDBFile(protein_pdb_final, proximityBonding=False)
         
-        cavity = Chem.Mol(mol)
-        protein = Chem.Mol(mol)
-        
+        if cavity is None or protein is None:
+            print(f"Failed to load structures for {protein_pdb}")
+            continue
+
+        # Step 6: Centralize cavity and align protein
         cavity_centroid = get_mol_centroid(cavity)
         cavity = centralize(cavity)
         translation = trans(-cavity_centroid[0], -cavity_centroid[1], -cavity_centroid[2])
         protein_conformer = protein.GetConformer()
         rdMolTransforms.TransformConformer(protein_conformer, translation)
 
+        # Step 7: Generate sample shapes and grids
         sample_shapes = []
         sample_n_o_f = []
-        
-        # Reduce rotations to 24 (one for each basic rotation)
-        # and add progress bar
-        for i in tqdm(range(24), desc=f"Processing rotations for molecule {idx}"):
+        for i in range(200):
+            print(i)
+            i = i % 24
+
             copied_cavity = copy.deepcopy(cavity)
             copied_protein = copy.deepcopy(protein)
 
@@ -254,36 +298,91 @@ for idx, mol in enumerate(first_5_mols):
             rdMolTransforms.TransformConformer(protein_conformer, rotation)
 
             curr_cavity_shape = get_shape(copied_cavity, atom_stamp, 0.5, 15)
-            # Instead of creating a large 183x183x183 grid, create a centered 21x21x21 grid
-            grid_size = 21
-            start_idx = curr_cavity_shape.shape[0]//2 - grid_size//2
-            end_idx = start_idx + grid_size
-            
-            # Extract the central portion
-            centered_shape = curr_cavity_shape[
-                start_idx:end_idx,
-                start_idx:end_idx,
-                start_idx:end_idx
-            ]
+            large_cavity_shape = np.zeros((61 * 3, 61 * 3, 61 * 3))
+            large_cavity_shape[61 * 1:61 * 2, 61 * 1:61 * 2, 61 * 1:61 * 2] = curr_cavity_shape
 
             protein_coords, protein_features = get_binary_features(copied_protein, -1, False)
             protein_grid, feature_dict = make_grid(protein_coords, protein_features, 0.5, 15)
             protein_grid = protein_grid.squeeze()
 
-            # Store the centered shape instead of the large one
-            sample_shapes.append(centered_shape)
-            sample_n_o_f.append(protein_grid)
+            n_o_f_grid = np.zeros(protein_grid.shape)
+            for xyz in feature_dict[(7.0,)] + feature_dict[(8.0,)] + feature_dict[(9.0,)]:
+                x, y, z = xyz[0], xyz[1], xyz[2]
+
+                x_left = x - 4 if x - 4 >= 0 else 0
+                x_right = x + 4 if x + 4 < protein_grid.shape[0] else protein_grid.shape[0] - 1
+
+                y_left = y - 4 if y - 4 >= 0 else 0
+                y_right = y + 4 if y + 4 < protein_grid.shape[0] else protein_grid.shape[0] - 1
+
+                z_left = z - 4 if z - 4 >= 0 else 0
+                z_right = z + 4 if z + 4 < protein_grid.shape[0] else protein_grid.shape[0] - 1
+
+                tmp = n_o_f_grid[x_left: x_right + 1, y_left: y_right + 1, z_left: z_right + 1]
+                tmp += 1
+            large_n_o_f_grid = np.zeros((61 * 3, 61 * 3, 61 * 3))
+            large_n_o_f_grid[61 * 1:61 * 2, 61 * 1:61 * 2, 61 * 1:61 * 2] = n_o_f_grid
+
+            seed_data = sample(data, 10)
+            union_shape = np.zeros((61, 61, 61))
+            for seed in seed_data:
+                mol_shape = get_shape(centralize(seed[0]), atom_stamp, 0.5, 15)
+                union_shape = union_shape + mol_shape
+            union_shape[union_shape > 1] = 1
+
+            flag = False
+            for j in range(0, 122):
+                large_union_shape = np.zeros((61 * 3, 61 * 3, 61 * 3))
+                large_union_shape[j: j + 61, j: j + 61, j: j + 61] = union_shape
+                inter_shape = large_cavity_shape * large_union_shape
+                if inter_shape.sum() > 2400:
+                    flag = True
+                    break
+            if flag:
+                inter_idx = np.where(inter_shape > 0)
+                x, y, z = inter_idx[0].mean(), inter_idx[1].mean(), inter_idx[2].mean()
+                x, y, z = int(x.round()), int(y.round()), int(z.round())
+                x_left, x_right = x - 13, x + 14 + 1
+                y_left, y_right = y - 13, y + 14 + 1
+                z_left, z_right = z - 13, z + 14 + 1
+                inter_shape = inter_shape[x_left: x_right, y_left: y_right, z_left: z_right]
+                inter_n_o_f = large_n_o_f_grid[x_left: x_right, y_left: y_right, z_left: z_right]
+                sample_shapes.append(inter_shape)
+                sample_n_o_f.append(inter_n_o_f)
+
+        sample_shapes.append(get_shape(cavity, atom_stamp, 0.5, 6.75))
+
+        protein_coords, protein_features = get_binary_features(protein, -1, False)
+        protein_grid, feature_dict = make_grid(protein_coords, protein_features, 0.5, 6.75)
+        protein_grid = protein_grid.squeeze()
+        n_o_f_grid = np.zeros(protein_grid.shape)
+        for xyz in feature_dict[(7.0,)] + feature_dict[(8.0,)] + feature_dict[(9.0,)]:
+            x, y, z = xyz[0], xyz[1], xyz[2]
+
+            x_left = x - 4 if x - 4 >= 0 else 0
+            x_right = x + 4 if x + 4 < protein_grid.shape[0] else protein_grid.shape[0] - 1
+
+            y_left = y - 4 if y - 4 >= 0 else 0
+            y_right = y + 4 if y + 4 < protein_grid.shape[0] else protein_grid.shape[0] - 1
+
+            z_left = z - 4 if z - 4 >= 0 else 0
+            z_right = z + 4 if z + 4 < protein_grid.shape[0] else protein_grid.shape[0] - 1
+
+            tmp = n_o_f_grid[x_left: x_right + 1, y_left: y_right + 1, z_left: z_right + 1]
+            tmp += 1
+        sample_n_o_f.append(n_o_f_grid)
 
         all_sample_shapes.append(sample_shapes)
         all_sample_n_o_f.append(sample_n_o_f)
-        print(f"Successfully processed molecule {idx}")
+
+        print(f"Successfully processed {os.path.basename(protein_pdb)}")
 
     except Exception as e:
-        print(f"Failed to process molecule {idx}: {e}")
+        print(f"Error processing molecule {protein_pdb}: {e}")
         continue
 
 print(f"Saving {len(all_sample_shapes)} shapes...")
-with open(os.path.join(output_data_dir, 'sample_shapes.pkl'), 'wb') as fw:
+with open('/itet-stor/sdivita/net_scratch/originale/ChemProjector/chemprojector/data/processed/all/sample_shapes.pkl', 'wb') as fw:
     pkl.dump(all_sample_shapes, fw)
 
 processed_data = []
@@ -300,7 +399,7 @@ dataset = ShapePretrainingDataset(
 )
 
 print("Saving final dataset...")
-with open(os.path.join(output_data_dir, 'shape_dataset.pkl'), 'wb') as fw:
+with open('/itet-stor/sdivita/net_scratch/originale/ChemProjector/chemprojector/data/processed/all/shape_dataset.pkl', 'wb') as fw:
     pkl.dump(dataset, fw)
 
 print("Processing complete!")
