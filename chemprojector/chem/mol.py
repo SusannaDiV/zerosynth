@@ -18,6 +18,7 @@ from tqdm.auto import tqdm
 
 from .base import Drawable
 from .featurize import atom_features_simple, bond_features_simple, tokenize_smiles
+from .gaussian_ph4 import GaussianPH4Generator
 
 
 @dataclasses.dataclass(frozen=True, eq=True, unsafe_hash=True)
@@ -30,9 +31,14 @@ class FingerprintOption:
     rdkit_fp_size: int = 2048
     # Ph4
     ph4_dim: int = 840
+    
+    # Gaussian PH4 options
+    gaussian_sigma: float = 1.0
+    gaussian_distance_cutoff: float = 12.0
+    gaussian_normalize: bool = True
 
     def __post_init__(self):
-        supported_types = ("ph4", "morgan", "rdkit", "gobbi_pharm2d")
+        supported_types = ("ph4", "gaussian_ph4", "morgan", "rdkit", "gobbi_pharm2d")
         if self.type not in supported_types:
             raise ValueError(f"Unsupported fingerprint type: {self.type}")
 
@@ -185,6 +191,13 @@ class Molecule(Drawable):
             bit_vec = DataStructs.cDataStructs.ConvertToExplicit(
                 Generate2D.Gen2DFingerprint(self._rdmol, Gobbi_Pharm2D.factory)
             )
+        elif option.type == "gaussian_ph4":
+            generator = GaussianPH4Generator(
+                sigma=option.gaussian_sigma,
+                distance_cutoff=option.gaussian_distance_cutoff,
+                normalize=option.gaussian_normalize
+            )
+            return generator.get_fingerprint(self._rdmol)
         else:
             raise ValueError(f"Unsupported fingerprint type: {option.type}")
 
