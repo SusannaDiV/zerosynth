@@ -18,7 +18,7 @@ _default_sdf_path = pathlib.Path("data/Enamine_Rush-Delivery_Building_Blocks-US_
     type=click.Path(exists=True, path_type=pathlib.Path),
     default=pathlib.Path("data/reaction_templates_hb.txt"),
 )
-@click.option("--out", type=click.Path(path_type=pathlib.Path), default=pathlib.Path("data/processed/all/matrix_ph4.pkl"))
+@click.option("--out", type=click.Path(path_type=pathlib.Path), default=pathlib.Path("data/processed/all/matrix_ph4_ultimo.pkl"))
 def matrix(reactant: pathlib.Path, reaction: pathlib.Path, out: pathlib.Path):
     if out.exists():
         click.confirm(f"{out} already exists. Overwrite?", abort=True)

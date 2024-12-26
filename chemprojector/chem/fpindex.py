@@ -33,17 +33,17 @@ def _fill_fingerprint(
     
     # Process molecules one at a time to control memory usage
     for i, mol in enumerate(molecules):
-        print(f"\nDEBUG _fill_fingerprint:")
-        print(f"Molecule type: {type(mol)}")
-        print(f"RDMol type: {type(mol._rdmol)}")
+        #print(f"\nDEBUG _fill_fingerprint:")
+        #print(f"Molecule type: {type(mol)}")
+        #print(f"RDMol type: {type(mol._rdmol)}")
         try:
-            print("About to compute fingerprint...")
+            #print("About to compute fingerprint...")
             fingerprint = mol.get_fingerprint(fp_option).astype(np.uint8)
-            print("Fingerprint computed successfully")
+            #print("Fingerprint computed successfully")
             fp[offset + i] = fingerprint
             del fingerprint  # Explicitly delete to free memory
         except Exception as e:
-            print(f"Failed to process molecule at index {offset + i}: {str(e)}")
+            #print(f"Failed to process molecule at index {offset + i}: {str(e)}")
             import traceback
             traceback.print_exc()
             continue

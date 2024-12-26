@@ -21,7 +21,7 @@ _default_sdf_path = pathlib.Path("/itet-stor/sdivita/net_scratch/originale/ChemP
     type=click.Path(exists=True, path_type=pathlib.Path),
     default=_default_sdf_path,
 )
-@click.option("--out", type=click.Path(path_type=pathlib.Path), default=pathlib.Path("data/processed/all/fpindex_ph4_new.pkl"))
+@click.option("--out", type=click.Path(path_type=pathlib.Path), default=pathlib.Path("data/processed/all/fpindex_ph4_ultimo.pkl"))
 def fpindex(model_config: DictConfig, molecule: pathlib.Path, out: pathlib.Path):
     if out.exists():
         click.confirm(f"{out} already exists. Overwrite?", abort=True)

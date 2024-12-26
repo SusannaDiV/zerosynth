@@ -22,7 +22,7 @@ from .featurize import atom_features_simple, bond_features_simple, tokenize_smil
 
 @dataclasses.dataclass(frozen=True, eq=True, unsafe_hash=True)
 class FingerprintOption:
-    type: str = "morgan"
+    type: str = "ph4"
     # Morgan
     morgan_radius: int = 2
     morgan_n_bits: int = 256
