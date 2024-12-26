@@ -11,7 +11,6 @@ from chemprojector.chem.fpindex import FingerprintIndex
 from chemprojector.chem.matrix import ReactantReactionMatrix
 from chemprojector.data.common import ProjectionBatch, draw_batch
 from chemprojector.utils.train import get_optimizer, get_scheduler, sum_weighted_losses
-from chemprojector.models.encoder import ShapePretrainingEncoder
 
 from .chemprojector import ChemProjector, draw_generation_results
 
@@ -30,7 +29,7 @@ class ChemProjectorWrapper(pl.LightningModule):
         
         # Initialize shape encoder if specified in config
         if config.model.get("use_shape_encoder", False):
-            self.shape_encoder = ShapePretrainingEncoder(
+            self.shape_encoder = ShapeEncoder(
                 patch_size=config.model.shape_encoder.patch_size,
                 d_model=config.model.shape_encoder.d_model,
                 num_layers=config.model.shape_encoder.num_layers,
