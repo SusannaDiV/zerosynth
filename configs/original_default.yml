@@ -1,5 +1,15 @@
 version: 2
 
+shape:
+  dataset_path: 'data/processed/all/shape_dataset.pkl'
+  patch_size: 3
+  grid_resolution: 1.0
+  max_dist_stamp: 3.0
+  max_dist: 10.0
+  noise:
+    mu: 0.0
+    sigma: 0.1
+
 chem:
   fp_option:
     type: ph4
@@ -11,17 +21,13 @@ data:
   init_stack_weighted_ratio: 0.90
 
 model:
-  encoder_type: graph
   encoder:
-    num_atom_classes: 100
-    num_bond_classes: 10
-    dim: 512
-    depth: 8
-    dim_head: 64
-    edge_dim: 128
-    heads: 8
-    rel_pos_emb: false
-    output_norm: false
+    encoder_type: "shape"
+    patch_size: 32
+    d_model: 256
+    num_layers: 6
+    nhead: 8
+    max_seq_length: 3000
   
   decoder:
     d_model: 512

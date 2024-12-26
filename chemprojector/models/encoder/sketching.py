@@ -13,7 +13,7 @@ from shape_utils import get_binary_features
 from tfbio_data import make_grid
 import numpy as np
 
-data_path = r'C:\Users\s.divita\Videos\DESERT\mio\mio\data\training_data.pkl'
+data_path = 'chemprojector/models/encoder/data/training_data.pkl'
 with open(data_path, 'rb') as fr:
     data = pkl.load(fr)
 

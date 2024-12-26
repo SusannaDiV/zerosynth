@@ -109,7 +109,7 @@ class GenerateResult:
 class ChemProjector(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        self.encoder = get_encoder(cfg.encoder_type, cfg.encoder)
+        self.encoder = get_encoder(cfg.encoder.encoder_type, cfg.encoder)
         self.decoder = Decoder(**cfg.decoder)
         self.d_model: int = self.encoder.dim
 
@@ -126,7 +126,14 @@ class ChemProjector(nn.Module):
         self.fingerprint_head: BaseFingerprintHead = MultiFingerprintHead(**cfg.fingerprint_head)
 
     def encode(self, batch: ProjectionBatch):
-        return self.encoder(batch)
+        # Get shapes from the preprocessed dataset
+        shapes = batch["shape"]  # (batch_size, box_size, box_size, box_size)
+        shape_patches = batch["shape_patches"]  # (batch_size, n_patches, patch_size^3)
+        
+        # Pass through encoder
+        code = self.encoder(shapes, shape_patches)
+        code_padding_mask = None
+        return code, code_padding_mask
 
     def get_loss(
         self,
@@ -170,17 +177,29 @@ class ChemProjector(nn.Module):
 
         return loss_dict, aux_dict
 
-    def get_loss_shortcut(self, batch: ProjectionBatch, **options):
+    def get_loss_shortcut(self, batch: ProjectionBatch, warmup: bool = False) -> tuple[dict[str, torch.Tensor], dict]:
+        # Get shape embeddings from encoder
         code, code_padding_mask = self.encode(batch)
-        return self.get_loss(
-            code=code,
-            code_padding_mask=code_padding_mask,
-            token_types=batch["token_types"],
-            rxn_indices=batch["rxn_indices"],
-            reactant_fps=batch["reactant_fps"],
-            token_padding_mask=batch["token_padding_mask"],
-            **options,
-        )
+        
+        # Calculate shape reconstruction loss
+        shape_patches_pred = self.decoder(code, code_padding_mask)
+        shape_patches_true = batch.shape_patches
+        
+        shape_loss = F.mse_loss(shape_patches_pred, shape_patches_true)
+        
+        # Calculate other losses (token, reaction, fingerprint) using the encoded representation
+        token_loss = self.token_head.get_loss(code)
+        reaction_loss = self.reaction_head.get_loss(code)
+        fp_loss, aux_dict = self.fingerprint_head.get_loss(code, warmup=warmup)
+        
+        loss_dict = {
+            "shape": shape_loss,
+            "token": token_loss,
+            "reaction": reaction_loss,
+            "fingerprint": fp_loss,
+        }
+        
+        return loss_dict, aux_dict
 
     @torch.inference_mode()
     def predict(

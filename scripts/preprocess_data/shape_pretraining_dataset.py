@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from math import ceil
-from .utils import get_atom_stamp, get_shape, get_shape_patches, get_atom_stamp_with_noise
+from shape_utils import get_atom_stamp, get_shape, get_shape_patches, get_atom_stamp_with_noise
 
 class ShapePretrainingDataset(Dataset):
     """Dataset class to handle molecular shape data"""

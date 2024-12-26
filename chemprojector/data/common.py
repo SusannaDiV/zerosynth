@@ -1,6 +1,7 @@
 import enum
 from collections.abc import Sequence
 from typing import TypedDict
+import dataclasses
 
 import torch
 import numpy as np
@@ -35,20 +36,16 @@ class ProjectionData(TypedDict, total=False):
     rxn_seq: Sequence[Reaction | None]
 
 
-class ProjectionBatch(TypedDict, total=False):
-    # Encoder
-    atoms: torch.Tensor
-    bonds: torch.Tensor
-    atom_padding_mask: torch.Tensor
-    smiles: torch.Tensor
-    # Decoder
-    token_types: torch.Tensor
-    rxn_indices: torch.Tensor
-    reactant_fps: torch.Tensor
-    token_padding_mask: torch.Tensor
-    # Auxilliary
-    mol_seq: Sequence[Sequence[Molecule]]
-    rxn_seq: Sequence[Sequence[Reaction | None]]
+@dataclasses.dataclass
+class ProjectionBatch:
+    shape: torch.Tensor  # (batch_size, box_size, box_size, box_size)
+    shape_patches: torch.Tensor  # (batch_size, n_patches, patch_size^3)
+    
+    def to(self, device):
+        return ProjectionBatch(
+            shape=self.shape.to(device),
+            shape_patches=self.shape_patches.to(device)
+        )
 
 
 def featurize_stack_actions(

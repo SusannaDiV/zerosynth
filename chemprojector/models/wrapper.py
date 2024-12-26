@@ -5,11 +5,13 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf
+from torch.utils.data import DataLoader, random_split
 
 from chemprojector.chem.fpindex import FingerprintIndex
 from chemprojector.chem.matrix import ReactantReactionMatrix
 from chemprojector.data.common import ProjectionBatch, draw_batch
 from chemprojector.utils.train import get_optimizer, get_scheduler, sum_weighted_losses
+from chemprojector.models.encoder import ShapePretrainingEncoder
 
 from .chemprojector import ChemProjector, draw_generation_results
 
@@ -25,6 +27,17 @@ class ChemProjectorWrapper(pl.LightningModule):
                 "args": args or {},
             }
         )
+        
+        # Initialize shape encoder if specified in config
+        if config.model.get("use_shape_encoder", False):
+            self.shape_encoder = ShapePretrainingEncoder(
+                patch_size=config.model.shape_encoder.patch_size,
+                d_model=config.model.shape_encoder.d_model,
+                num_layers=config.model.shape_encoder.num_layers,
+                nhead=config.model.shape_encoder.nhead,
+                max_seq_length=config.model.shape_encoder.max_seq_length
+            )
+        
         self.model = ChemProjector(config.model)
 
     @property
@@ -44,6 +57,10 @@ class ChemProjectorWrapper(pl.LightningModule):
 
         with open(self.config.chem.fpindex, "rb") as f:
             self.fpindex: FingerprintIndex = pickle.load(f)
+        
+        # Load shape dataset
+        with open(self.config.shape.dataset_path, "rb") as f:
+            self.shape_dataset = pickle.load(f)
 
     def configure_optimizers(self):
         optimizer = get_optimizer(self.config.train.optimizer, self.model)
@@ -57,6 +74,11 @@ class ChemProjectorWrapper(pl.LightningModule):
         return optimizer
 
     def training_step(self, batch: ProjectionBatch, batch_idx: int):
+        # Add shape encoding if available
+        if hasattr(self, 'shape_encoder') and "shape_patches" in batch:
+            shape_memory, _ = self.shape_encoder(batch["shape_patches"])
+            batch["shape_encoding"] = shape_memory
+            
         loss_dict, aux_dict = self.model.get_loss_shortcut(batch, warmup=self.current_epoch == 0)
         loss_sum = sum_weighted_losses(loss_dict, self.config.train.loss_weights)
 

@@ -21,7 +21,7 @@ def _SimpleMLP(dim_in: int, dim_out: int, dim_hidden: int) -> nn.Sequential:
 class Decoder(nn.Module):
     def __init__(
         self,
-        d_model: int = 512,
+        d_model: int = 256,
         nhead: int = 8,
         dim_feedforward: int = 2048,
         num_layers: int = 6,
@@ -56,7 +56,7 @@ class Decoder(nn.Module):
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        code = torch.zeros([batch_size, 0, self.model_dim], dtype=dtype, device=device)
+        code = torch.zeros([batch_size, 0, self.d_model], dtype=dtype, device=device)
         code_padding_mask = torch.zeros([batch_size, 0], dtype=torch.bool, device=device)
         return code, code_padding_mask
 
