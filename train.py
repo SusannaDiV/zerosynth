@@ -88,6 +88,9 @@ def main(
 
     model = ChemProjectorWrapper(config)
 
+    # Modify the validation check interval based on debug mode
+    val_check_interval = 1 if debug else min(config.train.val_freq, config.train.max_iters)
+
     # Train
     trainer = pl.Trainer(
         accelerator="gpu",
@@ -105,7 +108,7 @@ def main(
         logger=[
             loggers.TensorBoardLogger(log_dir, name=exp_name, version=exp_ver),
         ],
-        val_check_interval=1 if debug else config.train.val_freq,
+        val_check_interval=val_check_interval,
         limit_val_batches=2,
         limit_train_batches=3 if debug else None,
     )
