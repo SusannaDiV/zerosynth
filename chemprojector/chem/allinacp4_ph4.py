@@ -61,7 +61,7 @@ hyd_smarts = ["a1aaaaa1",
 	      "[$([S]~[#6])&!$(S~[!#6])]"]
 
 FEATURE_TYPES = ['ARO', 'HBD', 'HBA', 'POS', 'NEG', 'HYD']
-GRID_SIZE = 20
+GRID_SIZE = 40
 GRID_RANGE = (-20, 40)
 
 def get_grid_index(coord, min_val, max_val, n_bins):
@@ -172,77 +172,80 @@ def average(l):
             sum_y / n,
             sum_z / n)
 
+def get_feature_points(mol, patterns):
+    """Helper function to get feature points using patterns"""
+    return find_matches(mol, patterns)
+
+def get_hydrophobic_points(mol, patterns):
+    """Helper function to get hydrophobic points with optional clustering"""
+    return find_HYD(True, mol)  # Always use clustering by default
+
+def compute_pairwise_distances(points1, points2):
+    """Compute pairwise distances between two sets of points"""
+    distances = []
+    for p1 in points1:
+        for p2 in points2:
+            distances.append(euclid(p1, p2))
+    return distances
+
 def compute_fingerprint_from_mol(mol, cluster_HYD=True):
-    # Check if molecule has conformers, if not generate them
-    if mol.GetNumConformers() == 0:
-        mol = Chem.AddHs(mol)
-        AllChem.EmbedMolecule(mol, randomSeed=42)
-        AllChem.MMFFOptimizeMolecule(mol)
-        mol = Chem.RemoveHs(mol)
+    """Compute pharmacophore fingerprint from molecule"""
+    # Create a copy of the molecule to avoid modifying the original
+    mol = Chem.Mol(mol)
     
-    # Constants from ACP4 source
-    MAX_DIST = 20.0  # Maximum distance to consider between features (Angstroms)
-    BIN_SIZE = 0.5   # Distance discretization step
-    NUM_BINS = int(MAX_DIST / BIN_SIZE)  # = 40 bins
+    # Add hydrogens
+    mol = Chem.AddHs(mol)
     
-    # Get features directly from molecule
-    features = []
-    aromatics = find_ARO(mol)
-    donors = find_HBD(mol)
-    acceptors = find_HBA(mol)
-    positives = find_POS(mol)
-    negatives = find_NEG(mol)
-    hydrophobes = find_HYD(cluster_HYD, mol)
-    
-    # Combine all features with their types
-    for coords in aromatics:
-        features.append(('ARO', coords))
-    for coords in donors:
-        features.append(('HBD', coords))
-    for coords in acceptors:
-        features.append(('HBA', coords))
-    for coords in positives:
-        features.append(('POS', coords))
-    for coords in negatives:
-        features.append(('NEG', coords))
-    for coords in hydrophobes:
-        features.append(('HYD', coords))
-    
-    # Calculate number of feature pair channels
-    n_feat_types = len(FEATURE_TYPES)
-    n_channels = (n_feat_types * (n_feat_types + 1)) // 2  # Upper triangular
-    
-    # Initialize fingerprint array
-    fp = np.zeros(n_channels * NUM_BINS, dtype=np.uint8)
-    
-    # For each pair of features
-    for i, (type1, coords1) in enumerate(features):
-        idx1 = FEATURE_TYPES.index(type1)
-        for type2, coords2 in features[i+1:]:
-            idx2 = FEATURE_TYPES.index(type2)
+    try:
+        # Try to generate conformer
+        conf_success = AllChem.EmbedMolecule(mol, randomSeed=42)
+        if conf_success == -1:
+            raise ValueError("Conformer generation failed")
             
-            # Get channel index (upper triangular matrix)
-            if idx1 <= idx2:
-                channel = (idx1 * n_feat_types - (idx1 * (idx1 - 1))//2) + (idx2 - idx1)
-            else:
-                channel = (idx2 * n_feat_types - (idx2 * (idx2 - 1))//2) + (idx1 - idx2)
+        # Try MMFF optimization first
+        try:
+            AllChem.MMFFOptimizeMolecule(mol)
+        except:
+            # Fallback to UFF if MMFF fails
+            AllChem.UFFOptimizeMolecule(mol)
             
-            # Calculate distance and bin with linear interpolation
-            dist = np.linalg.norm(np.array(coords1) - np.array(coords2))
-            if dist <= MAX_DIST:
-                # Linear binning - contribute to two adjacent bins
-                bin_idx = dist / BIN_SIZE
-                bin_low = int(bin_idx)
-                bin_high = bin_low + 1
-                frac_high = bin_idx - bin_low
-                frac_low = 1.0 - frac_high
+        # Get feature points
+        aromatics = find_ARO(mol)
+        donors = find_HBD(mol)
+        acceptors = find_HBA(mol)
+        positives = find_POS(mol)
+        negatives = find_NEG(mol)
+        hydrophobes = find_HYD(cluster_HYD, mol)
+        
+        # Compute pairwise distances and create fingerprint
+        feature_points = [aromatics, donors, acceptors, positives, negatives, hydrophobes]
+        n_features = len(FEATURE_TYPES)
+        fingerprint = np.zeros((n_features * (n_features + 1) // 2) * GRID_SIZE, dtype=np.uint8)
+        
+        idx = 0
+        for i in range(n_features):
+            for j in range(i, n_features):
+                points1 = feature_points[i]
+                points2 = feature_points[j]
+                if points1 and points2:
+                    distances = compute_pairwise_distances(points1, points2)
+                    hist, _ = np.histogram(distances, bins=GRID_SIZE, range=GRID_RANGE)
+                    fingerprint[idx:idx + GRID_SIZE] = hist
+                idx += GRID_SIZE
                 
-                if bin_low < NUM_BINS:
-                    fp[channel * NUM_BINS + bin_low] += frac_low
-                if bin_high < NUM_BINS:
-                    fp[channel * NUM_BINS + bin_high] += frac_high
-    
-    return fp
+        # Verify fingerprint dimension
+        expected_dim = (n_features * (n_features + 1) // 2) * GRID_SIZE
+        if len(fingerprint) != expected_dim:
+            print(f"Warning: Fingerprint dimension mismatch. Got {len(fingerprint)}, expected {expected_dim}")
+            fingerprint = np.zeros(expected_dim, dtype=np.uint8)
+            
+        return fingerprint
+        
+    except Exception as e:
+        print(f"Warning: Failed to compute pharmacophore fingerprint: {str(e)}")
+        # Return zero vector in case of failure
+        n_features = len(FEATURE_TYPES)
+        return np.zeros((n_features * (n_features + 1) // 2) * GRID_SIZE, dtype=np.uint8)
 
 def prfx_print(prfx, out, positions_3d):
     for (x, y, z) in positions_3d:
