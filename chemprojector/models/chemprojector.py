@@ -112,12 +112,16 @@ class ChemProjector(nn.Module):
         self.encoder = get_encoder(cfg.encoder_type, cfg.encoder)
         self.decoder = Decoder(**cfg.decoder)
         self.d_model: int = self.encoder.dim
-
-        self.token_head = ClassifierHead(
-            self.d_model,
-            max(TokenType) + 1,
-            dim_hidden=cfg.token_head.dim_hidden,
-        )
+        
+        # Add shape decoding head when using shape encoder
+        if cfg.encoder_type == "shape":
+            self.shape_head = nn.Linear(self.d_model, 27)  # 3x3x3 patches
+        else:
+            self.token_head = ClassifierHead(
+                self.d_model,
+                max(TokenType) + 1,
+                dim_hidden=cfg.token_head.dim_hidden,
+            )
         self.reaction_head = ClassifierHead(
             self.d_model,
             cfg.reaction_head.num_reaction_classes,
@@ -132,46 +136,62 @@ class ChemProjector(nn.Module):
         self,
         code: torch.Tensor | None,
         code_padding_mask: torch.Tensor | None,
-        token_types: torch.Tensor,
-        rxn_indices: torch.Tensor,
-        reactant_fps: torch.Tensor,
-        token_padding_mask: torch.Tensor,
+        token_types: torch.Tensor | None = None,
+        rxn_indices: torch.Tensor | None = None,
+        reactant_fps: torch.Tensor | None = None,
+        token_padding_mask: torch.Tensor | None = None,
+        shape_patches: torch.Tensor | None = None,
         **options,
     ):
-        h = self.decoder(
-            code=code,
-            code_padding_mask=code_padding_mask,
-            token_types=token_types,
-            rxn_indices=rxn_indices,
-            reactant_fps=reactant_fps,
-            token_padding_mask=token_padding_mask,
-        )[:, :-1]
-
-        token_types_gt = token_types[:, 1:].contiguous()
-        rxn_indices_gt = rxn_indices[:, 1:].contiguous()
-        reactant_fps_gt = reactant_fps[:, 1:].contiguous()
-
         loss_dict: dict[str, torch.Tensor] = {}
         aux_dict: dict[str, torch.Tensor] = {}
 
-        # NOTE: token_padding_mask is True for padding tokens: ~token_padding_mask[:, :-1].contiguous()
-        # We set the mask to None so the model perfers producing the `END` token when the embedding makes no sense
-        loss_dict["token"] = self.token_head.get_loss(h, token_types_gt, None)
-        loss_dict["reaction"] = self.reaction_head.get_loss(h, rxn_indices_gt, token_types_gt == TokenType.REACTION)
+        if shape_patches is not None:
+            # Shape reconstruction path
+            decoded = self.shape_head(code)  # code is the encoded shape patches
+            loss_dict["shape"] = torch.nn.functional.mse_loss(decoded, shape_patches)
+        else:
+            # Chemical reaction path
+            h = self.decoder(
+                code=code,
+                code_padding_mask=code_padding_mask,
+                token_types=token_types,
+                rxn_indices=rxn_indices,
+                reactant_fps=reactant_fps,
+                token_padding_mask=token_padding_mask,
+            )[:, :-1]
 
-        fp_loss, fp_aux = self.fingerprint_head.get_loss(
-            h,
-            reactant_fps_gt,
-            token_types_gt == TokenType.REACTANT,
-            **options,
-        )
-        loss_dict.update(fp_loss)
-        aux_dict.update(fp_aux)
+            token_types_gt = token_types[:, 1:].contiguous()
+            rxn_indices_gt = rxn_indices[:, 1:].contiguous()
+            reactant_fps_gt = reactant_fps[:, 1:].contiguous()
+
+            loss_dict["token"] = self.token_head.get_loss(h, token_types_gt, None)
+            loss_dict["reaction"] = self.reaction_head.get_loss(h, rxn_indices_gt, token_types_gt == TokenType.REACTION)
+
+            fp_loss, fp_aux = self.fingerprint_head.get_loss(
+                h,
+                reactant_fps_gt,
+                token_types_gt == TokenType.REACTANT,
+                **options,
+            )
+            loss_dict.update(fp_loss)
+            aux_dict.update(fp_aux)
 
         return loss_dict, aux_dict
 
-    def get_loss_shortcut(self, batch: ProjectionBatch, **options):
+    def get_loss_shortcut(self, batch: ProjectionBatch):
+        # First encode the input
         code, code_padding_mask = self.encode(batch)
+        
+        # For shape model, we only need shape_patches
+        if "shape_patches" in batch:
+            return self.get_loss(
+                code=code,
+                code_padding_mask=code_padding_mask,
+                shape_patches=batch["shape_patches"]
+            )
+        
+        # For chemical model, we need all the token and reaction data
         return self.get_loss(
             code=code,
             code_padding_mask=code_padding_mask,
@@ -179,7 +199,7 @@ class ChemProjector(nn.Module):
             rxn_indices=batch["rxn_indices"],
             reactant_fps=batch["reactant_fps"],
             token_padding_mask=batch["token_padding_mask"],
-            **options,
+            warmup=batch.get("warmup", False)
         )
 
     @torch.inference_mode()

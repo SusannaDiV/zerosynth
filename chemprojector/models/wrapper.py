@@ -26,14 +26,8 @@ class ChemProjectorWrapper(pl.LightningModule):
                 "args": args or {},
             }
         )
-        
-        if config.model.encoder_type == "shape":
-            self.encoder = get_encoder(config.model.encoder_type, config.model.encoder)
-            self.patch_decoder = nn.Linear(256, 27)
-            self.is_shape_model = True
-        else:
-            self.model = ChemProjector(config.model)
-            self.is_shape_model = False
+        self.model = ChemProjector(config.model)
+        self.is_shape_model = config.model.encoder_type == "shape"
 
     @property
     def config(self):
@@ -85,62 +79,26 @@ class ChemProjectorWrapper(pl.LightningModule):
             return optimizer
 
     def training_step(self, batch, batch_idx: int):
+        loss_dict, aux_dict = self.model.get_loss_shortcut(batch)
         if self.is_shape_model:
-            encoded, padding_mask = self.encoder(batch)
-            decoded = self.patch_decoder(encoded)
-            loss = torch.nn.functional.mse_loss(decoded, batch["shape_patches"])
+            loss = loss_dict["shape"]
             self.log("train/loss", loss, on_step=True, prog_bar=True, logger=True)
             return loss
         else:
-            loss_dict, aux_dict = self.model.get_loss_shortcut(batch, warmup=self.current_epoch == 0)
             loss_sum = sum_weighted_losses(loss_dict, self.config.train.loss_weights)
-
             self.log("train/loss", loss_sum, on_step=True, prog_bar=True, logger=True)
             self.log_dict({f"train/loss_{k}": v for k, v in loss_dict.items()}, on_step=True, logger=True)
-
-            if "fp_select" in aux_dict:
-                fp_select: torch.Tensor = aux_dict["fp_select"]
-                fp_ratios: dict[str, float] = {}
-                for i in range(int(fp_select.max().item()) + 1):
-                    ratio = (fp_select == i).float().mean().nan_to_num(0.0)
-                    fp_ratios[f"fp_select/{i}"] = ratio.item()
-                self.log_dict(fp_ratios, on_step=True, logger=True)
             return loss_sum
 
     def validation_step(self, batch, batch_idx: int) -> Any:
+        loss_dict, _ = self.model.get_loss_shortcut(batch)
         if self.is_shape_model:
-            encoded, padding_mask = self.encoder(batch)
-            decoded = self.patch_decoder(encoded)
-            loss = torch.nn.functional.mse_loss(decoded, batch["shape_patches"])
+            loss = loss_dict["shape"]
             self.log("val/loss", loss, on_step=False, prog_bar=True, logger=True, sync_dist=True)
             return loss
         else:
-            loss_dict, _ = self.model.get_loss_shortcut(batch)
             loss_weight = self.config.train.get("val_loss_weights", self.config.train.loss_weights)
             loss_sum = sum_weighted_losses(loss_dict, loss_weight)
-
             self.log("val/loss", loss_sum, on_step=False, prog_bar=True, logger=True, sync_dist=True)
             self.log_dict({f"val/loss_{k}": v for k, v in loss_dict.items()}, on_step=False, logger=True, sync_dist=True)
-
-            # Generate
-            if self.args.get("visualize", True) and batch_idx == 0:
-                result = self.model.generate_without_stack(batch=batch, rxn_matrix=self.rxn_matrix, fpindex=self.fpindex)
-                images_gen = draw_generation_results(result)
-                images_ref = draw_batch(batch)
-                if self.logger is not None:
-                    tb_logger = self.logger.experiment
-                    for i, (image_gen, image_ref) in enumerate(zip(images_gen, images_ref)):
-                        tb_logger.add_images(
-                            f"val/{i}_generate",
-                            np.array(image_gen) / 255,
-                            self.current_epoch,
-                            dataformats="HWC",
-                        )
-                        tb_logger.add_images(
-                            f"val/{i}_reference",
-                            np.array(image_ref) / 255,
-                            self.current_epoch,
-                            dataformats="HWC",
-                        )
-
             return loss_sum
