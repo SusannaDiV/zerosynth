@@ -132,7 +132,7 @@ class Stack:
 
     def get_rxn_idx_seq(self) -> list[int | None]:
         return [t[1] if t[0] > 0 else None for t in self.tokens]
-
+    
     def count_reactions(self) -> int:
         cnt = 0
         for rxn in self._rxns:

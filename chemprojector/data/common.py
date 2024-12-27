@@ -25,6 +25,9 @@ class ProjectionData(TypedDict, total=False):
     bonds: torch.Tensor
     atom_padding_mask: torch.Tensor
     smiles: torch.Tensor
+    # Shape encoder
+    shape: torch.Tensor
+    shape_patches: torch.Tensor
     # Decoder
     token_types: torch.Tensor
     rxn_indices: torch.Tensor
@@ -49,6 +52,10 @@ class ProjectionBatch(TypedDict, total=False):
     # Auxilliary
     mol_seq: Sequence[Sequence[Molecule]]
     rxn_seq: Sequence[Sequence[Reaction | None]]
+    # Shape encoder fields
+    shape: torch.Tensor  # [batch_size, box_size, box_size, box_size]
+    shape_patches: torch.Tensor  # [batch_size, num_patches, patch_size**3]
+    shape_padding_mask: torch.Tensor  # [batch_size, num_patches]
 
 
 def featurize_stack_actions(
@@ -56,6 +63,7 @@ def featurize_stack_actions(
     rxn_idx_seq: Sequence[int | None],
     end_token: bool,
     fpindex: FingerprintIndex,
+    shape_data: list | None = None,
 ) -> dict[str, torch.Tensor]:
     seq_len = len(mol_idx_seq) + 1  # Plus START token
     if end_token:
@@ -67,6 +75,9 @@ def featurize_stack_actions(
         "reactant_fps": torch.zeros([seq_len, fp_dim], dtype=torch.float32),
         "token_padding_mask": torch.zeros([seq_len], dtype=torch.bool),
     }
+    if shape_data is not None:
+        feats["shape_seq"] = []
+        feats["shape_patches_seq"] = []
     feats["token_types"][0] = TokenType.START
     for i, (mol_idx, rxn_idx) in enumerate(zip(mol_idx_seq, rxn_idx_seq), start=1):
         if rxn_idx is not None:
@@ -78,15 +89,20 @@ def featurize_stack_actions(
             if mol_fp.dtype == np.uint8:
                 mol_fp = mol_fp.astype(np.float32)
             feats["reactant_fps"][i] = torch.from_numpy(mol_fp)
+            if shape_data is not None:
+                shape_item = shape_data[mol_idx]  # Direct indexing using mol_idx
+                feats["shape_seq"].append(torch.tensor(shape_item['shape'], dtype=torch.float))
+                feats["shape_patches_seq"].append(create_patches(shape_item['shape']))
     return feats
 
 
-def featurize_stack(stack: Stack, end_token: bool, fpindex: FingerprintIndex) -> dict[str, torch.Tensor]:
+def featurize_stack(stack: Stack, end_token: bool, fpindex: FingerprintIndex, shape_data: list | None = None) -> dict[str, torch.Tensor]:
     return featurize_stack_actions(
         mol_idx_seq=stack.get_mol_idx_seq(),
         rxn_idx_seq=stack.get_rxn_idx_seq(),
         end_token=end_token,
         fpindex=fpindex,
+        shape_data=shape_data
     )
 
 
@@ -97,6 +113,9 @@ def create_data(
     rxn_seq: Sequence[Reaction | None],
     rxn_idx_seq: Sequence[int | None],
     fpindex: FingerprintIndex,
+    shape_data: list | None = None,
+    shape: torch.Tensor = None,
+    shape_patches: torch.Tensor = None,
 ):
     atom_f, bond_f = product.featurize_simple()
     stack_feats = featurize_stack_actions(
@@ -104,6 +123,7 @@ def create_data(
         rxn_idx_seq=rxn_idx_seq,
         end_token=True,
         fpindex=fpindex,
+        shape_data=shape_data
     )
 
     data: "ProjectionData" = {
@@ -117,7 +137,14 @@ def create_data(
         "rxn_indices": stack_feats["rxn_indices"],
         "reactant_fps": stack_feats["reactant_fps"],
         "token_padding_mask": stack_feats["token_padding_mask"],
+        
     }
+    
+    if shape is not None:
+        data["shape"] = shape
+    if shape_patches is not None:
+        data["shape_patches"] = shape_patches
+        
     return data
 
 

@@ -1,7 +1,11 @@
 from collections.abc import Callable, Mapping, Sequence
+from typing import TypedDict, cast
 
 import torch
 import torch.nn.functional as F
+
+
+__all__ = ['collate_tokens', 'collate_2d_tokens', 'collate_1d_features', 'collate_padding_masks']
 
 
 def collate_tokens(features: Sequence[torch.Tensor], max_size: int) -> torch.Tensor:
@@ -42,3 +46,14 @@ def apply_collate(
     transpose = {k: [d[k] for d in data_list] for k in spec.keys()}
     batch = {k: spec[k](transpose[k], max_size) for k in spec.keys()}
     return batch
+
+
+def collate_shape_patches(features: Sequence[torch.Tensor], max_size: int = None) -> torch.Tensor:
+    """Collate shape patches without padding since they're all same size"""
+    return torch.stack(features, dim=0)
+
+
+def collate_3d_grid(features: Sequence[torch.Tensor], max_size: int = None) -> torch.Tensor:
+    """Collate 3D shape grids without padding since they're all same size"""
+    return torch.stack(features, dim=0)
+

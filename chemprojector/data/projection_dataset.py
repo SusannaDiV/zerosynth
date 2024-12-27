@@ -18,6 +18,8 @@ from .collate import (
     collate_2d_tokens,
     collate_padding_masks,
     collate_tokens,
+    collate_3d_grid,
+    collate_shape_patches,
 )
 from .common import ProjectionBatch, ProjectionData, create_data
 
@@ -33,6 +35,11 @@ class Collater:
         self.max_smiles_len = max_smiles_len
         self.max_num_tokens = max_num_tokens
 
+        self.spec_shapes = {
+            "shape": collate_3d_grid,
+            "shape_patches": collate_shape_patches
+        }
+        
         self.spec_atoms = {
             "atoms": collate_tokens,
             "bonds": collate_2d_tokens,
@@ -52,6 +59,7 @@ class Collater:
             **apply_collate(self.spec_atoms, data_list_t, max_size=self.max_num_atoms),
             **apply_collate(self.spec_smiles, data_list_t, max_size=self.max_smiles_len),
             **apply_collate(self.spec_tokens, data_list_t, max_size=self.max_num_tokens),
+            **apply_collate(self.spec_shapes, data_list_t, max_size=None),
             "mol_seq": [d["mol_seq"] for d in data_list],
             "rxn_seq": [d["rxn_seq"] for d in data_list],
         }
@@ -63,11 +71,12 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
         self,
         reaction_matrix: ReactantReactionMatrix,
         fpindex: FingerprintIndex,
+        virtual_length: int = 65536,
         max_num_atoms: int = 80,
         max_smiles_len: int = 192,
         max_num_reactions: int = 5,
         init_stack_weighted_ratio: float = 0.0,
-        virtual_length: int = 65536,
+        shape_data: list | None = None,
     ) -> None:
         super().__init__()
         self._reaction_matrix = reaction_matrix
@@ -77,9 +86,19 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
         self._fpindex = fpindex
         self._init_stack_weighted_ratio = init_stack_weighted_ratio
         self._virtual_length = virtual_length
+        self.shape_data = shape_data
 
     def __len__(self) -> int:
         return self._virtual_length
+
+    def _create_patches(self, shape_grid, patch_size=3):
+        """Convert 3D grid into patches"""
+        shape = torch.tensor(shape_grid, dtype=torch.float)
+        patches = shape.unfold(0, patch_size, patch_size)\
+                      .unfold(1, patch_size, patch_size)\
+                      .unfold(2, patch_size, patch_size)
+        patches = patches.reshape(-1, patch_size**3)
+        return patches
 
     def __iter__(self):
         while True:
@@ -103,6 +122,19 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
                     fpindex=self._fpindex,
                 )
                 data["smiles"] = data["smiles"][: self._max_smiles_len]
+                
+                # Add shape data if available
+                if self.shape_data is not None:
+                    shape_item = random.choice(self.shape_data)
+                    shape_tensor = torch.tensor(shape_item['shape'], dtype=torch.float)
+                    data['shape'] = shape_tensor
+                    data['shape_patches'] = self._create_patches(shape_item['shape'])
+                else:
+                    # Add empty tensors if no shape data
+                    print("empty")
+                    data['shape'] = torch.zeros((1, 1, 1))  # Minimal 3D tensor
+                    data['shape_patches'] = torch.zeros((1, 27))  # For 3x3x3 patches
+                    
                 yield data
 
 
@@ -112,12 +144,14 @@ class ProjectionDataModule(pl.LightningDataModule):
         config,
         batch_size: int,
         num_workers: int = 4,
+        shape_data_path: str = "/itet-stor/sdivita/net_scratch/originale/ChemProjector/data/processed/validation/dataset1.pkl",
         **kwargs,
     ) -> None:
         super().__init__()
         self.config = config
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.shape_data_path = shape_data_path
         self.dataset_options = kwargs
 
     def setup(self, stage: str | None = None) -> None:
@@ -141,6 +175,12 @@ class ProjectionDataModule(pl.LightningDataModule):
 
         with open(self.config.chem.fpindex, "rb") as f:
             fpindex = pickle.load(f)
+
+        # Optionally load shape data if path is provided
+        if self.shape_data_path is not None:
+            with open(self.shape_data_path, "rb") as f:
+                shape_data = pickle.load(f)
+            self.dataset_options['shape_data'] = shape_data
 
         self.train_dataset = ProjectionDataset(
             reaction_matrix=rxn_matrix,
