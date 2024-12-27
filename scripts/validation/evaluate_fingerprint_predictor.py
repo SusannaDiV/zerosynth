@@ -14,12 +14,21 @@ def compute_metrics(true_fps, pred_fps):
     # Compute metrics per bit
     ap_scores = []
     auc_scores = []
+    tanimoto_scores = []
     
+    # Compute per-sample Tanimoto similarity
+    for i in range(true_fps.shape[0]):
+        intersection = np.sum(true_fps[i] * pred_fps[i])
+        union = np.sum((true_fps[i] + pred_fps[i]) > 0)
+        tanimoto = intersection / (union + 1e-6)
+        tanimoto_scores.append(tanimoto)
+    
+    # Compute per-bit AP and AUC scores
     for i in range(true_fps.shape[1]):
         true_bit = true_fps[:, i]
         pred_bit = pred_fps[:, i]
         
-        if len(np.unique(true_bit)) > 1:  # Only compute if there are both positive and negative samples
+        if len(np.unique(true_bit)) > 1:
             ap_scores.append(average_precision_score(true_bit, pred_bit))
             auc_scores.append(roc_auc_score(true_bit, pred_bit))
     
@@ -27,7 +36,11 @@ def compute_metrics(true_fps, pred_fps):
         'mean_ap': np.mean(ap_scores),
         'std_ap': np.std(ap_scores),
         'mean_auc': np.mean(auc_scores),
-        'std_auc': np.std(auc_scores)
+        'std_auc': np.std(auc_scores),
+        'mean_tanimoto': np.mean(tanimoto_scores),
+        'std_tanimoto': np.std(tanimoto_scores),
+        'min_tanimoto': np.min(tanimoto_scores),
+        'max_tanimoto': np.max(tanimoto_scores)
     }
 
 def evaluate_model(model, test_loader, device):
@@ -71,6 +84,9 @@ def main():
     print("\nEvaluation Results:")
     print(f"Mean Average Precision: {metrics['mean_ap']:.4f} ± {metrics['std_ap']:.4f}")
     print(f"Mean AUC-ROC: {metrics['mean_auc']:.4f} ± {metrics['std_auc']:.4f}")
+    print("\nTanimoto Similarity:")
+    print(f"Mean: {metrics['mean_tanimoto']:.4f} ± {metrics['std_tanimoto']:.4f}")
+    print(f"Range: [{metrics['min_tanimoto']:.4f}, {metrics['max_tanimoto']:.4f}]")
 
 if __name__ == "__main__":
     main() 

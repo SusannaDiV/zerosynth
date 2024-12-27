@@ -219,6 +219,12 @@ def collate_molecules_and_fingerprints(batch):
         'fingerprint': torch.stack(fingerprints)
     }
 
+def calculate_tanimoto_similarity(pred_fp, true_fp):
+    """Calculate Tanimoto similarity between predicted and true fingerprints"""
+    intersection = torch.sum(pred_fp * true_fp, dim=1)
+    union = torch.sum((pred_fp + true_fp) > 0, dim=1).float()
+    return intersection / (union + 1e-6)  # Add small epsilon to avoid division by zero
+
 def train_model(model, train_loader, val_loader, device, num_epochs=50):
     criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
@@ -228,6 +234,9 @@ def train_model(model, train_loader, val_loader, device, num_epochs=50):
         # Training phase
         model.train()
         train_loss = 0
+        train_tanimoto = 0
+        num_batches = 0
+        
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
             batch = {k: v.to(device) for k, v in batch.items()}
             optimizer.zero_grad()
@@ -235,29 +244,52 @@ def train_model(model, train_loader, val_loader, device, num_epochs=50):
             loss = criterion(outputs, batch['fingerprint'])
             loss.backward()
             optimizer.step()
+            
+            # Calculate Tanimoto similarity
+            tanimoto = calculate_tanimoto_similarity(outputs, batch['fingerprint'])
+            train_tanimoto += tanimoto.mean().item()
             train_loss += loss.item()
+            num_batches += 1
         
         # Validation phase
         model.eval()
         val_loss = 0
+        val_tanimoto = 0
+        val_batches = 0
+        
         with torch.no_grad():
             for batch in val_loader:
                 batch = {k: v.to(device) for k, v in batch.items()}
                 outputs = model(batch)
                 loss = criterion(outputs, batch['fingerprint'])
+                
+                # Calculate Tanimoto similarity
+                tanimoto = calculate_tanimoto_similarity(outputs, batch['fingerprint'])
+                val_tanimoto += tanimoto.mean().item()
                 val_loss += loss.item()
+                val_batches += 1
         
-        train_loss /= len(train_loader)
-        val_loss /= len(val_loader)
+        # Calculate averages
+        train_loss /= num_batches
+        train_tanimoto /= num_batches
+        val_loss /= val_batches
+        val_tanimoto /= val_batches
         
         print(f"Epoch {epoch+1}/{num_epochs}")
         print(f"Training Loss: {train_loss:.4f}")
+        print(f"Training Tanimoto: {train_tanimoto:.4f}")
         print(f"Validation Loss: {val_loss:.4f}")
+        print(f"Validation Tanimoto: {val_tanimoto:.4f}")
         
-        # Save best model
+        # Save best model based on validation loss
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), 'best_fingerprint_predictor.pt')
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'val_loss': val_loss,
+                'val_tanimoto': val_tanimoto,
+                'epoch': epoch
+            }, 'best_fingerprint_predictor.pt')
             print("Saved new best model!")
         print()
 

@@ -78,7 +78,7 @@ def main():
     supplier = Chem.SDMolSupplier(input_sdf)
     first_5_mols = []
     for idx, mol in enumerate(supplier):
-        if mol is not None and len(first_5_mols) < 20:
+        if mol is not None and len(first_5_mols) < 150:
             first_5_mols.append(mol)
     
     print(f"Processing {len(first_5_mols)} molecules...")
