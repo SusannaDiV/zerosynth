@@ -6,11 +6,11 @@ from typing import cast
 import pytorch_lightning as pl
 import torch
 from torch.utils.data import DataLoader, IterableDataset
-
 from chemprojector.chem.fpindex import FingerprintIndex
 from chemprojector.chem.matrix import ReactantReactionMatrix
 from chemprojector.chem.stack import create_stack_step_by_step
 from chemprojector.utils.train import worker_init_fn
+from skimage.util import view_as_blocks
 
 from .collate import (
     apply_collate,
@@ -27,6 +27,10 @@ import sys
 from chemprojector.chem.fpindex import FingerprintIndex
 sys.modules['__main__'].FingerprintIndex = FingerprintIndex
 
+def get_shape_patches(shape, patch_size):
+    assert shape.shape[0] % patch_size == 0 
+    shape_patches = view_as_blocks(shape, (patch_size, patch_size, patch_size))
+    return shape_patches
 
 class Collater:
     def __init__(self, max_num_atoms: int = 96, max_smiles_len: int = 192, max_num_tokens: int = 24):
@@ -91,14 +95,7 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
     def __len__(self) -> int:
         return self._virtual_length
 
-    def _create_patches(self, shape_grid, patch_size=3):
-        """Convert 3D grid into patches"""
-        shape = torch.tensor(shape_grid, dtype=torch.float)
-        patches = shape.unfold(0, patch_size, patch_size)\
-                      .unfold(1, patch_size, patch_size)\
-                      .unfold(2, patch_size, patch_size)
-        patches = patches.reshape(-1, patch_size**3)
-        return patches
+    
 
     def __iter__(self):
         while True:
@@ -126,14 +123,15 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
                 # Add shape data if available
                 if self.shape_data is not None:
                     shape_item = random.choice(self.shape_data)
-                    shape_tensor = torch.tensor(shape_item['shape'], dtype=torch.float)
-                    data['shape'] = shape_tensor
-                    data['shape_patches'] = self._create_patches(shape_item['shape'])
+                    shape = shape_item['shape']
+                    shape_patches = get_shape_patches(shape, patch_size=3)
+                    shape_patches = shape_patches.reshape(-1, 3**3)  # 3 is patch_size
+                    
+                    data['shape'] = torch.tensor(shape, dtype=torch.float)
+                    data['shape_patches'] = torch.tensor(shape_patches, dtype=torch.float)
                 else:
-                    # Add empty tensors if no shape data
-                    print("empty")
-                    data['shape'] = torch.zeros((1, 1, 1))  # Minimal 3D tensor
-                    data['shape_patches'] = torch.zeros((1, 27))  # For 3x3x3 patches
+                    data['shape'] = torch.zeros((21, 21, 21))  # Standard 3D grid size
+                    data['shape_patches'] = torch.zeros((343, 27))  # (7^3, 3^3) for 3x3x3 patches
                     
                 yield data
 

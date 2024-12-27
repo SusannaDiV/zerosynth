@@ -112,7 +112,7 @@ class ShapeEncoder(BaseEncoder):
     def __init__(
         self,
         patch_size: int = 3,
-        d_model: int = 256,
+        d_model: int = 512,#d_model: int = 256, done to match the decoder
         nhead: int = 8,
         num_layers: int = 6,
         max_seq_length: int = 3000
