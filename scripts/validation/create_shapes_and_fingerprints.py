@@ -8,42 +8,68 @@ import copy
 import numpy as np
 from tqdm.auto import tqdm
 from allinacp4_ph4 import compute_fingerprint_from_mol
+from chemprojector.chem.mol import Molecule, FingerprintOption
+from chemprojector.chem.featurize import atom_features_simple, bond_features_simple
+from chemprojector.models.transformer.graph_transformer import GraphTransformer
 
 def get_graph_features(mol):
-    """Extract graph features (atoms and bonds) from molecule"""
-    # Atom features
+    """Extract graph features using ChemProjector's featurization"""
+    # Add Hydrogens for better graph representation
+    mol = Chem.AddHs(mol)
+    
+    # Get atom features and positions
     atom_features = []
+    positions = []
+    conf = mol.GetConformer()
+    
     for atom in mol.GetAtoms():
         features = [
-            atom.GetAtomicNum(),  # Atomic number
-            atom.GetDegree(),     # Number of bonds
-            atom.GetFormalCharge(),  # Formal charge
-            int(atom.GetChiralTag()),  # Chirality
-            int(atom.GetIsAromatic()),  # Aromaticity
-            atom.GetHybridization().real  # Hybridization state
+            atom_features_simple(atom),
+            atom.GetDegree(),     
+            atom.GetFormalCharge(),
+            int(atom.GetChiralTag()),
+            int(atom.GetIsAromatic()),
+            atom.GetHybridization().real,
+            atom.GetNumImplicitHs(),
+            int(atom.IsInRing()),
+            atom.GetTotalValence()
         ]
         atom_features.append(features)
+        
+        # Get 3D positions
+        pos = conf.GetAtomPosition(atom.GetIdx())
+        positions.append([pos.x, pos.y, pos.z])
     
     # Bond features and connectivity
     bond_features = []
-    edge_index = []  # [from_idx, to_idx] for each bond
+    edge_index = []
     for bond in mol.GetBonds():
         features = [
-            int(bond.GetBondType()),  # Bond type
-            int(bond.GetIsConjugated()),  # Conjugation
-            int(bond.IsInRing())  # Ring membership
+            bond_features_simple(bond),
+            int(bond.GetIsConjugated()),
+            int(bond.IsInRing()),
+            int(bond.GetStereo()),
+            int(bond.GetBondDir())
         ]
-        # Add both directions for each bond
         i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
         edge_index.extend([[i, j], [j, i]])
         bond_features.extend([features, features])
     
+    # Create attention mask (all True since single molecule)
+    num_atoms = len(atom_features)
+    attention_mask = np.ones((num_atoms, num_atoms), dtype=bool)
+    
+    # Remove Hydrogens after processing
+    mol = Chem.RemoveHs(mol)
+    
     return {
         'atom_features': np.array(atom_features),
-        'bond_features': np.array(bond_features) if bond_features else np.empty((0, 3)),
-        'edge_index': np.array(edge_index).T if edge_index else np.empty((2, 0))
+        'bond_features': np.array(bond_features) if bond_features else np.empty((0, 5)),
+        'edge_index': np.array(edge_index).T if edge_index else np.empty((2, 0)),
+        'positions': np.array(positions),
+        'attention_mask': attention_mask
     }
-
+        
 def main():
     input_sdf = "/itet-stor/sdivita/net_scratch/originale/ChemProjector/data/Enamine_Rush-Delivery_Building_Blocks-US_249948cmpd_20241108.sdf"
     output_dir = "/itet-stor/sdivita/net_scratch/originale/ChemProjector/data/processed/validation"
@@ -52,7 +78,7 @@ def main():
     supplier = Chem.SDMolSupplier(input_sdf)
     first_5_mols = []
     for idx, mol in enumerate(supplier):
-        if mol is not None and len(first_5_mols) < 5:
+        if mol is not None and len(first_5_mols) < 20:
             first_5_mols.append(mol)
     
     print(f"Processing {len(first_5_mols)} molecules...")
@@ -132,13 +158,16 @@ def main():
     # Save processed data
     processed_data = []
     for mol_idx in range(len(all_sample_shapes)):
+        mol = first_5_mols[mol_idx]
+        graph_features = get_graph_features(mol)  # Get graph features once per molecule
+        
         for rot_idx in range(len(all_sample_shapes[mol_idx])):
             processed_data.append({
-                'mol': first_5_mols[mol_idx],  # Original molecule
-                'shape': all_sample_shapes[mol_idx][rot_idx],  # Shape array (21,21,21)
-                'protein_grid': all_sample_n_o_f[mol_idx][rot_idx],  # Protein grid array (21,21,21)
-                'graph': get_graph_features(first_5_mols[mol_idx]),  # Graph structure
-                'fingerprint': all_fingerprints[mol_idx]  # Target fingerprint (840,)
+                'mol': first_5_mols[mol_idx],
+                'shape': all_sample_shapes[mol_idx][rot_idx],
+                'protein_grid': all_sample_n_o_f[mol_idx][rot_idx],
+                'graph_features': graph_features,  # Add graph features
+                'fingerprint': all_fingerprints[mol_idx]
             })
 
     print(f"Saving {len(processed_data)} shape-fingerprint pairs...")
