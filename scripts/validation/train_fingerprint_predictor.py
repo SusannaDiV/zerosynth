@@ -11,6 +11,8 @@ from tqdm.auto import tqdm
 import os
 import pickle
 
+# Without patches augmentation
+
 class FingerprintPredictor(nn.Module):
     def __init__(self, fp_dim=840):
         super().__init__()
@@ -31,6 +33,10 @@ class FingerprintPredictor(nn.Module):
         )
     
     def forward(self, batch):
+        # If batch is a tensor, wrap it in a dict
+        if isinstance(batch, torch.Tensor):
+            batch = {'shape_patches': batch}
+        
         # Get encoded representation
         encoded, _ = self.encoder(batch)
         # Use mean pooling over sequence dimension
@@ -63,7 +69,8 @@ class ShapeFingerprintDataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.data[idx]
-        shape = item['mol']
+        # Use pre-computed shape instead of computing it again
+        shape = item['shape']
         
         # Process shape into patches
         shape_patches = get_shape_patches(shape, self.patch_size)
@@ -73,7 +80,7 @@ class ShapeFingerprintDataset(Dataset):
         fingerprint = np.clip(item['fingerprint'], 0, 1)
 
         return {
-            'shape': torch.tensor(shape, dtype=torch.long),
+            'shape': torch.tensor(shape, dtype=torch.float),
             'shape_patches': torch.tensor(shape_patches, dtype=torch.float),
             'fingerprint': torch.from_numpy(fingerprint).float()
         }
@@ -96,7 +103,7 @@ def collate_shapes_and_fingerprints(batch):
 
     return {
         'shape': shapes,
-        'shape_patches': shape_patches,  # This is what the encoder expects
+        'shape_patches': shape_patches,
         'fingerprint': fingerprints
     }
 
@@ -144,7 +151,7 @@ def train_model(model, train_loader, val_loader, device, num_epochs=50):
 
 def main():
     # Load dataset
-    with open('/itet-stor/sdivita/net_scratch/originale/ChemProjector/data/processed/validation/shape_fingerprint_dataset.pkl', 'rb') as f:
+    with open('/itet-stor/sdivita/net_scratch/originale/ChemProjector/data/processed/validation/shape_fingerprint_dataset1.pkl', 'rb') as f:
         data = pickle.load(f)
     
     # Split dataset

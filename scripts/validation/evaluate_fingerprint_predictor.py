@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 import pickle
 from train_fingerprint_predictor import (
     ShapeFingerprintDataset, 
-    FingerprintPredictor, 
+    FingerprintPredictor,
     collate_shapes_and_fingerprints
 )
 from tqdm.auto import tqdm
@@ -37,13 +37,13 @@ def evaluate_model(model, test_loader, device):
     
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Evaluating"):
-            shapes = batch['shape'].to(device)
+            # Move shape_patches to device and pass the whole batch
+            batch = {k: v.to(device) for k, v in batch.items()}
+            outputs = model(batch)
             true_fps = batch['fingerprint']
             
-            pred_fps = model(shapes).cpu()
-            
-            all_true_fps.append(true_fps)
-            all_pred_fps.append(pred_fps)
+            all_true_fps.append(true_fps.cpu())
+            all_pred_fps.append(outputs.cpu())
     
     all_true_fps = torch.cat(all_true_fps, dim=0).numpy()
     all_pred_fps = torch.cat(all_pred_fps, dim=0).numpy()
@@ -53,7 +53,7 @@ def evaluate_model(model, test_loader, device):
 
 def main():
     # Load test data
-    with open('/itet-stor/sdivita/net_scratch/originale/ChemProjector/data/processed/validation/shape_fingerprint_dataset.pkl', 'rb') as f:
+    with open('/itet-stor/sdivita/net_scratch/originale/ChemProjector/data/processed/validation/shape_fingerprint_dataset1.pkl', 'rb') as f:        
         data = pickle.load(f)
     
     # Create test dataset and loader
