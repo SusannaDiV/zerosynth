@@ -9,6 +9,7 @@ chem:
 
 data:
   init_stack_weighted_ratio: 0.90
+  log_dir: runs/original_training
 
 model:
   encoder_type: graph
