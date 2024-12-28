@@ -64,7 +64,7 @@ def featurize_stack_actions(
     end_token: bool,
     fpindex: FingerprintIndex,
     shape_data: list | None = None,
-    encoder_type: str = "graph"
+    encoder_type: str = "shape"
 ) -> dict[str, torch.Tensor]:
     seq_len = len(mol_idx_seq) + 1
     if end_token:
@@ -94,7 +94,7 @@ def featurize_stack_actions(
                 mol_fp = mol_fp.astype(np.float32)
             feats["reactant_fps"][i] = torch.from_numpy(mol_fp)
             
-            # Only process shape data if using shape encoder
+            # Only process shape data if using shape encoder, might be useless, who knows
             if encoder_type == "shape" and shape_data is not None:
                 shape_item = shape_data[mol_idx]
                 feats["shape_seq"].append(torch.tensor(shape_item['shape'], dtype=torch.float))
@@ -108,7 +108,7 @@ def featurize_stack(
     end_token: bool, 
     fpindex: FingerprintIndex, 
     shape_data: list | None = None,
-    encoder_type: str = "graph"
+    encoder_type: str = "shape"
 ) -> dict[str, torch.Tensor]:
     return featurize_stack_actions(
         mol_idx_seq=stack.get_mol_idx_seq(),
@@ -130,7 +130,7 @@ def create_data(
     shape_data: list | None = None,
     shape: torch.Tensor = None,
     shape_patches: torch.Tensor = None,
-    encoder_type: str = "graph"
+    encoder_type: str = "shape"
 ):
     stack_feats = featurize_stack_actions(
         mol_idx_seq=mol_idx_seq,

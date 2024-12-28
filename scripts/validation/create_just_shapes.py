@@ -20,6 +20,8 @@ def main():
     for idx, mol in tqdm(enumerate(supplier), desc="Reading molecules"):
         if mol is not None:
             valid_mols.append(mol)
+            if len(valid_mols) >= 10:  # Only take first 10 valid molecules
+                break
     
     print(f"Processing {len(valid_mols)} molecules...")
     all_sample_shapes = []
@@ -91,7 +93,7 @@ def main():
             continue
 
         # Save intermediate results every 1000 molecules
-        if (idx + 1) % 1000 == 0:
+        if (idx + 1) % 8000 == 0:
             intermediate_data = []
             for mol_idx in range(len(all_sample_shapes)):
                 mol = valid_mols[mol_idx]
@@ -117,7 +119,7 @@ def main():
             })
 
     print(f"Saving {len(processed_data)} shape pairs...")
-    with open(os.path.join(output_dir, 'dataset1.pkl'), 'wb') as fw:
+    with open(os.path.join(output_dir, 'dataset2.pkl'), 'wb') as fw:
         pkl.dump(processed_data, fw)
     print("Processing complete!")
 
