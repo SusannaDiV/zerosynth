@@ -149,13 +149,50 @@ def train_model(model, train_loader, val_loader, device, num_epochs=50):
             print("Saved new best model!")
         print()
 
+def create_unique_fingerprint_split(data, test_size=0.2, random_state=42):
+    """Split data ensuring no fingerprint overlap between train and validation sets"""
+    # Create dictionary mapping fingerprints to all their associated records
+    fp_to_records = {}
+    for idx, item in enumerate(data):
+        # Convert fingerprint array to tuple for hashability
+        fp_tuple = tuple(item['fingerprint'].flatten())
+        if fp_tuple not in fp_to_records:
+            fp_to_records[fp_tuple] = []
+        fp_to_records[fp_tuple].append(idx)
+    
+    # Get unique fingerprints and split them
+    unique_fps = list(fp_to_records.keys())
+    np.random.seed(random_state)
+    np.random.shuffle(unique_fps)
+    
+    split_idx = int(len(unique_fps) * (1 - test_size))
+    train_fps = unique_fps[:split_idx]
+    val_fps = unique_fps[split_idx:]
+    
+    # Create train and validation datasets
+    train_indices = []
+    val_indices = []
+    
+    for fp in train_fps:
+        train_indices.extend(fp_to_records[fp])
+    for fp in val_fps:
+        val_indices.extend(fp_to_records[fp])
+    
+    train_data = [data[i] for i in train_indices]
+    val_data = [data[i] for i in val_indices]
+    
+    print(f"Split dataset into {len(train_data)} training and {len(val_data)} validation samples")
+    print(f"Using {len(train_fps)} unique fingerprints for training and {len(val_fps)} for validation")
+    
+    return train_data, val_data
+
 def main():
     # Load dataset
-    with open('/itet-stor/sdivita/net_scratch/originale/ChemProjector/data/processed/validation/shape_fingerprint_dataset1.pkl', 'rb') as f:
+    with open('/itet-stor/sdivita/net_scratch/originale/ChemProjector/data/processed/validation/dataset2.pkl', 'rb') as f:
         data = pickle.load(f)
     
-    # Split dataset
-    train_data, val_data = train_test_split(data, test_size=0.2, random_state=42)
+    # Split dataset ensuring unique fingerprints
+    train_data, val_data = create_unique_fingerprint_split(data, test_size=0.2, random_state=42)
     
     # Create datasets
     train_dataset = ShapeFingerprintDataset(train_data)

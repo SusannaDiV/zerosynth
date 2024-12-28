@@ -9,118 +9,183 @@ import numpy as np
 from tqdm.auto import tqdm
 from chemprojector.chem.mol import Molecule
 from chemprojector.chem.featurize import atom_features_simple, bond_features_simple
+import psutil
+import gc
+from allinacp4_ph4 import compute_fingerprint_from_mol
+import multiprocessing as mp
+
+def get_shape_with_memory_check(cavity, atom_stamp, resolution, box_size):
+    """Wrapper to check memory requirements before shape computation"""
+    # Calculate required memory
+    grid_points = int(2 * box_size / resolution) + 1
+    required_memory = grid_points**3 * 4  # 4 bytes per float32
+    
+    # Check available memory (with 20% buffer)
+    available_memory = psutil.virtual_memory().available * 0.8
+    
+    if required_memory > available_memory:
+        raise MemoryError(f"Insufficient memory. Need {required_memory/1024:.0f} KiB, "
+                         f"have {available_memory/1024:.0f} KiB available")
+    
+    return get_shape(cavity, atom_stamp, resolution, box_size)
+
+def process_single_rotation(mol, rotation_mat, atom_stamp, fingerprint, cavity, protein, resolution=0.5, box_size=15):
+    """Process a single rotation of a molecule with pre-computed fingerprint and conformers"""
+    try:
+        copied_cavity = copy.deepcopy(cavity)
+        copied_protein = copy.deepcopy(protein)
         
+        cavity_conformer = copied_cavity.GetConformer()
+        rotation = np.zeros((4, 4))
+        rotation[:3, :3] = rotation_mat
+        rdMolTransforms.TransformConformer(cavity_conformer, rotation)
+        
+        curr_cavity_shape = get_shape_with_memory_check(
+            copied_cavity, atom_stamp, resolution, box_size
+        )
+        
+        del copied_cavity
+        
+        grid_size = 21
+        start_idx = curr_cavity_shape.shape[0]//2 - grid_size//2
+        end_idx = start_idx + grid_size
+        centered_shape = curr_cavity_shape[
+            start_idx:end_idx,
+            start_idx:end_idx,
+            start_idx:end_idx
+        ]
+        
+        protein_coords, protein_features = get_binary_features(copied_protein, -1, False)
+        protein_grid = make_grid(protein_coords, protein_features, resolution, box_size)[0]
+        
+        del copied_protein
+        return {
+            'mol': mol,
+            'shape': centered_shape,
+            'protein_grid': protein_grid.squeeze(),
+            'fingerprint': fingerprint
+        }
+        
+    except Exception as e:
+        print(f"Failed to process rotation: {str(e)}")
+        return None
+
+def process_molecule_batch(mol_batch, atom_stamp):
+    """Process a batch of molecules with parallel rotations"""
+    results = []
+    for mol in mol_batch:
+        if mol is None:
+            continue
+            
+        try:
+            # Calculate fingerprint once
+            fingerprint = compute_fingerprint_from_mol(mol).flatten()
+            
+            # Generate 3D conformer once
+            mol = Chem.AddHs(mol)
+            AllChem.EmbedMolecule(mol, randomSeed=42)
+            AllChem.MMFFOptimizeMolecule(mol)
+            mol = Chem.RemoveHs(mol)
+            
+            # Create cavity and protein once
+            cavity = Chem.Mol(mol)
+            protein = Chem.Mol(mol)
+            cavity_centroid = get_mol_centroid(cavity)
+            cavity = centralize(cavity)
+            
+            # Process all rotations in parallel
+            with mp.Pool(processes=min(24, mp.cpu_count())) as rotation_pool:
+                rotation_results = rotation_pool.starmap(
+                    process_single_rotation,
+                    [(mol, rot_mat, atom_stamp, fingerprint, cavity, protein) 
+                     for rot_mat in ROTATIONS]
+                )
+            
+            # Collect valid results
+            results.extend([r for r in rotation_results if r is not None])
+            
+            # Clean up
+            del cavity, protein
+            gc.collect()
+            
+        except Exception as e:
+            print(f"Failed to process molecule: {str(e)}")
+            continue
+            
+    return results
+
 def main():
     input_sdf = "/itet-stor/sdivita/net_scratch/originale/ChemProjector/data/Enamine_Rush-Delivery_Building_Blocks-US_249948cmpd_20241108.sdf"
     output_dir = "/itet-stor/sdivita/net_scratch/originale/ChemProjector/data/processed/validation"
     os.makedirs(output_dir, exist_ok=True)
 
-    supplier = Chem.SDMolSupplier(input_sdf)
-    valid_mols = []
-    for idx, mol in tqdm(enumerate(supplier), desc="Reading molecules"):
-        if mol is not None:
-            valid_mols.append(mol)
-            if len(valid_mols) >= 10:  # Only take first 10 valid molecules
+    # Stream molecules from SDF
+    batch_size = 1000
+    current_batch = []
+    total_processed = 0
+    batch_files = []  # Keep track of batch files
+    processed_mols = 0  # Counter for processed molecules
+    current_mol_batch = []
+    
+    # Set CPU affinity for main process
+    os.sched_setaffinity(0, range(os.cpu_count() or 1))
+    
+    for mol in tqdm(Chem.ForwardSDMolSupplier(input_sdf, removeHs=False)):
+        if mol is None:
+            continue
+            
+        current_mol_batch.append(mol)
+        
+        # Process when we have enough molecules for a batch
+        if len(current_mol_batch) >= 4:  # Process 4 molecules at a time
+            atom_stamp = get_atom_stamp(grid_resolution=0.5, max_dist=4.0)
+            results = process_molecule_batch(current_mol_batch, atom_stamp)
+            current_batch.extend(results)
+            
+            # Save batch when it reaches batch_size
+            if len(current_batch) >= batch_size:
+                total_processed += len(current_batch)
+                batch_file = os.path.join(output_dir, f'dataset_batch_{total_processed}.pkl')
+                print(f"Saving batch of {len(current_batch)} results (total: {total_processed})")
+                
+                with open(batch_file, 'wb') as fw:
+                    pkl.dump(current_batch, fw)
+                batch_files.append(batch_file)
+                current_batch = []
+                gc.collect()
+            
+            current_mol_batch = []
+            processed_mols += 4
+            
+            if processed_mols >= 100:  # Stop after 100 molecules
                 break
     
-    print(f"Processing {len(valid_mols)} molecules...")
-    all_sample_shapes = []
-    all_sample_n_o_f = []
+    # Process any remaining molecules
+    if current_mol_batch:
+        atom_stamp = get_atom_stamp(grid_resolution=0.5, max_dist=4.0)
+        results = process_molecule_batch(current_mol_batch, atom_stamp)
+        current_batch.extend(results)
+    
+    # Save any remaining results
+    if current_batch:
+        total_processed += len(current_batch)
+        batch_file = os.path.join(output_dir, f'dataset_batch_{total_processed}.pkl')
+        with open(batch_file, 'wb') as fw:
+            pkl.dump(current_batch, fw)
+        batch_files.append(batch_file)
 
-    for idx, mol in tqdm(enumerate(valid_mols), desc="Processing molecules"):
-        try:
-            # Generate 3D conformer if needed
-            conf = mol.GetConformer()
-            positions = conf.GetPositions()
-            is_2d = all(pos[2] == 0 for pos in positions)
-            
-            if is_2d:
-                mol = Chem.AddHs(mol)
-                AllChem.EmbedMolecule(mol, randomSeed=42)
-                AllChem.MMFFOptimizeMolecule(mol)
-                mol = Chem.RemoveHs(mol)
-
-            atom_stamp = get_atom_stamp(grid_resolution=0.5, max_dist=4.0)
-            
-            cavity = Chem.Mol(mol)
-            protein = Chem.Mol(mol)
-            
-            cavity_centroid = get_mol_centroid(cavity)
-            cavity = centralize(cavity)
-            translation = trans(-cavity_centroid[0], -cavity_centroid[1], -cavity_centroid[2])
-            protein_conformer = protein.GetConformer()
-            rdMolTransforms.TransformConformer(protein_conformer, translation)
-
-            sample_shapes = []
-            sample_n_o_f = []
-            
-            for i in range(24):  # 24 rotations
-                copied_cavity = copy.deepcopy(cavity)
-                copied_protein = copy.deepcopy(protein)
-
-                cavity_conformer = copied_cavity.GetConformer()
-                protein_conformer = copied_protein.GetConformer()
-
-                rotation_mat = ROTATIONS[i]
-                rotation = np.zeros((4, 4))
-                rotation[:3, :3] = rotation_mat
-                rdMolTransforms.TransformConformer(cavity_conformer, rotation)
-                rdMolTransforms.TransformConformer(protein_conformer, rotation)
-
-                curr_cavity_shape = get_shape(copied_cavity, atom_stamp, 0.5, 15)
-                grid_size = 21
-                start_idx = curr_cavity_shape.shape[0]//2 - grid_size//2
-                end_idx = start_idx + grid_size
-                
-                centered_shape = curr_cavity_shape[
-                    start_idx:end_idx,
-                    start_idx:end_idx,
-                    start_idx:end_idx
-                ]
-
-                protein_coords, protein_features = get_binary_features(copied_protein, -1, False)
-                protein_grid, feature_dict = make_grid(protein_coords, protein_features, 0.5, 15)
-                protein_grid = protein_grid.squeeze()
-
-                sample_shapes.append(centered_shape)
-                sample_n_o_f.append(protein_grid)
-
-            all_sample_shapes.append(sample_shapes)
-            all_sample_n_o_f.append(sample_n_o_f)
-
-        except Exception as e:
-            print(f"Failed to process molecule {idx}: {e}")
-            continue
-
-        # Save intermediate results every 1000 molecules
-        if (idx + 1) % 8000 == 0:
-            intermediate_data = []
-            for mol_idx in range(len(all_sample_shapes)):
-                mol = valid_mols[mol_idx]
-                for rot_idx in range(len(all_sample_shapes[mol_idx])):
-                    intermediate_data.append({
-                        'mol': valid_mols[mol_idx],
-                        'shape': all_sample_shapes[mol_idx][rot_idx],
-                        'protein_grid': all_sample_n_o_f[mol_idx][rot_idx],
-                    })
-            print(f"Saving intermediate results after {idx + 1} molecules...")
-            with open(os.path.join(output_dir, f'dataset_intermediate_{idx + 1}.pkl'), 'wb') as fw:
-                pkl.dump(intermediate_data, fw)
-
-    # Save final processed data
-    processed_data = []
-    for mol_idx in range(len(all_sample_shapes)):
-        mol = valid_mols[mol_idx]
-        for rot_idx in range(len(all_sample_shapes[mol_idx])):
-            processed_data.append({
-                'mol': valid_mols[mol_idx],
-                'shape': all_sample_shapes[mol_idx][rot_idx],
-                'protein_grid': all_sample_n_o_f[mol_idx][rot_idx],
-            })
-
-    print(f"Saving {len(processed_data)} shape pairs...")
+    # Concatenate all batches into final dataset
+    print("Combining batches into final dataset...")
+    all_results = []
+    for batch_file in tqdm(batch_files):
+        with open(batch_file, 'rb') as fr:
+            batch_data = pkl.load(fr)
+            all_results.extend(batch_data)
+        os.remove(batch_file)  # Clean up batch file after loading
+    
+    print(f"Saving final dataset with {len(all_results)} results...")
     with open(os.path.join(output_dir, 'dataset2.pkl'), 'wb') as fw:
-        pkl.dump(processed_data, fw)
+        pkl.dump(all_results, fw)
     print("Processing complete!")
 
 if __name__ == "__main__":
