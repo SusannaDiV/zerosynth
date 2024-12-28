@@ -16,18 +16,17 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     supplier = Chem.SDMolSupplier(input_sdf)
-    first_5_mols = []
-    for idx, mol in enumerate(supplier):
-        if mol is not None and len(first_5_mols) < 150:
-            first_5_mols.append(mol)
+    valid_mols = []
+    for idx, mol in tqdm(enumerate(supplier), desc="Reading molecules"):
+        if mol is not None:
+            valid_mols.append(mol)
     
-    print(f"Processing {len(first_5_mols)} molecules...")
+    print(f"Processing {len(valid_mols)} molecules...")
     all_sample_shapes = []
     all_sample_n_o_f = []
 
-    for idx, mol in enumerate(first_5_mols):
+    for idx, mol in tqdm(enumerate(valid_mols), desc="Processing molecules"):
         try:
-            
             # Generate 3D conformer if needed
             conf = mol.GetConformer()
             positions = conf.GetPositions()
@@ -53,7 +52,7 @@ def main():
             sample_shapes = []
             sample_n_o_f = []
             
-            for i in tqdm(range(24), desc=f"Processing rotations for molecule {idx}"):
+            for i in range(24):  # 24 rotations
                 copied_cavity = copy.deepcopy(cavity)
                 copied_protein = copy.deepcopy(protein)
 
@@ -91,14 +90,28 @@ def main():
             print(f"Failed to process molecule {idx}: {e}")
             continue
 
-    # Save processed data
+        # Save intermediate results every 1000 molecules
+        if (idx + 1) % 1000 == 0:
+            intermediate_data = []
+            for mol_idx in range(len(all_sample_shapes)):
+                mol = valid_mols[mol_idx]
+                for rot_idx in range(len(all_sample_shapes[mol_idx])):
+                    intermediate_data.append({
+                        'mol': valid_mols[mol_idx],
+                        'shape': all_sample_shapes[mol_idx][rot_idx],
+                        'protein_grid': all_sample_n_o_f[mol_idx][rot_idx],
+                    })
+            print(f"Saving intermediate results after {idx + 1} molecules...")
+            with open(os.path.join(output_dir, f'dataset_intermediate_{idx + 1}.pkl'), 'wb') as fw:
+                pkl.dump(intermediate_data, fw)
+
+    # Save final processed data
     processed_data = []
     for mol_idx in range(len(all_sample_shapes)):
-        mol = first_5_mols[mol_idx]
-        
+        mol = valid_mols[mol_idx]
         for rot_idx in range(len(all_sample_shapes[mol_idx])):
             processed_data.append({
-                'mol': first_5_mols[mol_idx],
+                'mol': valid_mols[mol_idx],
                 'shape': all_sample_shapes[mol_idx][rot_idx],
                 'protein_grid': all_sample_n_o_f[mol_idx][rot_idx],
             })
