@@ -9,6 +9,9 @@ __pycache__/
 # Encoder
 chemprojector/models/encoder/
 
+# SLURM jobs
+jobs/
+
 # Distribution / packaging
 .Python
 build/
