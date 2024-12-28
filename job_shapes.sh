@@ -3,7 +3,7 @@
 #SBATCH --error=/itet-stor/sdivita/net_scratch/originale/ChemProjector/jobs/%j.err
 #SBATCH --mem=600G  # Increased from 32G to 128G for large molecule processing
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=32
 #SBATCH --time=48:00:00  # Added 48-hour time limit since this is a long job
 
 ETH_USERNAME=sdivita

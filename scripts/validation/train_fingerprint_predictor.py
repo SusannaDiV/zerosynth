@@ -52,8 +52,8 @@ class ShapeFingerprintDataset(Dataset):
                  max_dist_stamp=3.0,
                  max_dist=10.0,
                  patch_size=3,
-                 shape_noise_mu=0.0,
-                 shape_noise_sigma=0.0):
+                 shape_noise_mu=0.1,
+                 shape_noise_sigma=0.05):
         self.data = data
         self.grid_resolution = grid_resolution
         self.max_dist_stamp = max_dist_stamp
@@ -69,18 +69,34 @@ class ShapeFingerprintDataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.data[idx]
-        # Use pre-computed shape instead of computing it again
-        shape = item['shape']
+        if 'mol' not in item:
+            raise ValueError("Dataset items must contain 'mol' key for shape augmentation")
+            
+        # Get noisy atom stamp and actually use it
+        curr_atom_stamp = get_atom_stamp_with_noise(
+            self.grid_resolution,
+            self.max_dist_stamp,
+            self.shape_noise_mu,
+            self.shape_noise_sigma
+        )
+        
+        # Generate new shape with noisy stamp
+        augmented_shape = get_shape(
+            item['mol'],
+            curr_atom_stamp,
+            self.grid_resolution,
+            self.max_dist
+        )
         
         # Process shape into patches
-        shape_patches = get_shape_patches(shape, self.patch_size)
+        shape_patches = get_shape_patches(augmented_shape, self.patch_size)
         shape_patches = shape_patches.reshape(-1, self.patch_size**3)
         
         # Ensure fingerprint is between 0 and 1
         fingerprint = np.clip(item['fingerprint'], 0, 1)
 
         return {
-            'shape': torch.tensor(shape, dtype=torch.float),
+            'shape': torch.tensor(augmented_shape, dtype=torch.float),
             'shape_patches': torch.tensor(shape_patches, dtype=torch.float),
             'fingerprint': torch.from_numpy(fingerprint).float()
         }

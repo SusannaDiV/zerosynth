@@ -11,6 +11,7 @@ from chemprojector.chem.matrix import ReactantReactionMatrix
 from chemprojector.chem.stack import create_stack_step_by_step
 from chemprojector.utils.train import worker_init_fn
 from skimage.util import view_as_blocks
+from utils import get_atom_stamp, get_shape, get_shape_patches, get_atom_stamp_with_noise
 
 from .collate import (
     apply_collate,
@@ -133,15 +134,32 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
                 # Add shape data if available
                 if self.shape_data is not None:
                     shape_item = random.choice(self.shape_data)
-                    shape = shape_item['shape']
-                    shape_patches = get_shape_patches(shape, patch_size=3)
-                    shape_patches = shape_patches.reshape(-1, 3**3)  # 3 is patch_size
                     
-                    data['shape'] = torch.tensor(shape, dtype=torch.float)
+                    # Get noisy atom stamp and use it
+                    curr_atom_stamp = get_atom_stamp_with_noise(
+                        grid_resolution=1.0,
+                        max_dist=3.0,
+                        noise_mu=0.1,
+                        noise_sigma=0.05
+                    )
+                    
+                    # Generate new shape with noisy stamp
+                    augmented_shape = get_shape(
+                        shape_item['mol'],
+                        curr_atom_stamp,
+                        grid_resolution=1.0,
+                        max_dist=10.0
+                    )
+                    
+                    # Process shape into patches
+                    shape_patches = get_shape_patches(augmented_shape, patch_size=3)
+                    shape_patches = shape_patches.reshape(-1, 3**3)
+                    
+                    data['shape'] = torch.tensor(augmented_shape, dtype=torch.float)
                     data['shape_patches'] = torch.tensor(shape_patches, dtype=torch.float)
                 else:
-                    data['shape'] = torch.zeros((21, 21, 21))  # Standard 3D grid size
-                    data['shape_patches'] = torch.zeros((343, 27))  # (7^3, 3^3) for 3x3x3 patches
+                    data['shape'] = torch.zeros((21, 21, 21))
+                    data['shape_patches'] = torch.zeros((343, 27))
                     
                 yield data
 
