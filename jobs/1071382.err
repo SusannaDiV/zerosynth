@@ -1,5 +1,0 @@
-/usr/itetnas04/data-scratch-01/sdivita/data/shitong/ChemProjector/chemprojector/models/transformer/rotary_embedding.py:57: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
-  @autocast(enabled=False)
-/usr/itetnas04/data-scratch-01/sdivita/data/shitong/ChemProjector/chemprojector/models/transformer/rotary_embedding.py:265: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
-  @autocast(enabled=False)
-[rank: 0] Seed set to 42

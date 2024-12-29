@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --output=/itet-stor/sdivita/net_scratch/shitong/ChemProjector/jobs/%j.out
 #SBATCH --error=/itet-stor/sdivita/net_scratch/shitong/ChemProjector/jobs/%j.err
-##SBATCH --mem=98G
+##SBATCH --mem=498G
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gres=gpu:4
