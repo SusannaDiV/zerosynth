@@ -1,0 +1,26 @@
+Running on node: tikgpu09
+In directory: /itet-stor/sdivita/net_scratch/shitong/ChemProjector
+Starting on: Sun Dec 29 17:05:34 CET 2024
+SLURM_JOB_ID: 1071400
+GPU requested: 0,1,2,3
+Conda activated
+
+
+You have uncommitted changes:
+ - jobs/1071382.err
+ - jobs/1071382.out
+ - jobs/1071392.err
+ - jobs/1071392.out
+ - jobs/1071393.out
+ - jobs/1071394.out
+ - jobs/1071395.out
+ - jobs/1071396.out
+ - jobs/1071397.out
+ - jobs/1071398.out
+ - jobs/1071399.err
+ - jobs/1071399.out
+ - jobs/1071400.err
+ - jobs/1071400.out
+Please commit your changes before running the script.
+
+
