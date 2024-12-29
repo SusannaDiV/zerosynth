@@ -73,7 +73,6 @@ def main(
         accelerator="gpu",
         devices=devices,
         num_nodes=num_nodes,
-        precision="16-mixed",
         strategy=strategies.DDPStrategy(static_graph=True),
         num_sanity_val_steps=num_sanity_val_steps,
         gradient_clip_val=config.train.max_grad_norm,
