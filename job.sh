@@ -1,12 +1,11 @@
 #!/bin/bash
 #SBATCH --output=/itet-stor/sdivita/net_scratch/shitong/ChemProjector/jobs/%j.out
 #SBATCH --error=/itet-stor/sdivita/net_scratch/shitong/ChemProjector/jobs/%j.err
-##SBATCH --mem=498G
+##SBATCH --mem=198G
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gres=gpu:4
-#SBATCH --constraint="titan_rtx|tesla_v100"  # This targets nodes with Titan RTX GPUs
-
+#SBATCH --nodelist=tikgpu[10]  # For Titan RTX GPUs
 ETH_USERNAME=sdivita
 PROJECT_NAME=ChemProjector
 DIRECTORY=/itet-stor/${ETH_USERNAME}/net_scratch/shitong/${PROJECT_NAME}
@@ -38,10 +37,10 @@ cd ${DIRECTORY}
 
 # Execute training script with optimized parameters
 python train.py configs/original_default.yml \
-    --batch-size 32 \
-    --num-workers 4 \
-    --devices 1 \
-    --log-dir runs/original_training
+    --batch-size 1024 \
+    --num-workers 16 \
+    --devices 4 \
+    --log-dir /itet-stor/sdivita/net_scratch/shitong/ChemProjector/runs/original_training
 
 # Log completion
 echo "Finished at: $(date)"
