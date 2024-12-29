@@ -4,7 +4,7 @@ import click
 
 from chemprojector.chem.matrix import create_reactant_reaction_matrix_cache
 
-_default_sdf_path = pathlib.Path("data/Enamine_Rush-Delivery_Building_Blocks-US_223244cmpd_20231001.sdf")
+_default_sdf_path = pathlib.Path("/itet-stor/sdivita/net_scratch/shitong/ChemProjector/data/Enamine_Rush-Delivery_Building_Blocks-US.zip")
 
 
 @click.command()
