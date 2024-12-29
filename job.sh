@@ -37,7 +37,7 @@ cd ${DIRECTORY}
 
 # Execute training script with optimized parameters
 python train.py configs/original_default.yml \
-    --batch-size 256 \
+    --batch-size 32 \
     --num-workers 4 \
     --devices 1 \
     --log-dir /itet-stor/sdivita/net_scratch/shitong/ChemProjector/runs
