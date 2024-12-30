@@ -243,7 +243,7 @@ class StatePool:
                 mol.scaffold,
                 fp_option=FingerprintOption.morgan_for_tanimoto_similarity(),
             )
-            row["pharm2d_sim"] = self._mol.dice_similarity(mol, fp_option=FingerprintOption.gobbi_pharm2d())
+            row["pharm2d_sim"] = self._mol.dice_similarity(mol, fp_option=FingerprintOption.())
             row["rdkit_sim"] = self._mol.tanimoto_similarity(mol, fp_option=FingerprintOption.rdkit())
 
         df = pd.DataFrame(rows)

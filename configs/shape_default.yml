@@ -6,23 +6,19 @@ chem:
     morgan_radius: 2
     morgan_n_bits: 256
   rxn_matrix: data/processed/split/matrix_train.pkl
-  fpindex: data/processed/all/fpindex.pkl
+  fpindex: data/processed/all/fpindex_gaussian_ph4.pkl
 
 data:
   init_stack_weighted_ratio: 0.90
 
 model:
-  encoder_type: graph
+  encoder_type: shape
   encoder:
-    num_atom_classes: 100
-    num_bond_classes: 10
-    dim: 512
-    depth: 8
-    dim_head: 64
-    edge_dim: 128
-    heads: 8
-    rel_pos_emb: false
-    output_norm: false
+    patch_size: 3
+    d_model: 512
+    nhead: 8
+    num_layers: 6
+    max_seq_length: 3000 
   
   decoder:
     d_model: 512

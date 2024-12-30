@@ -6,11 +6,11 @@ from typing import cast
 import pytorch_lightning as pl
 import torch
 from torch.utils.data import DataLoader, IterableDataset
-
 from chemprojector.chem.fpindex import FingerprintIndex
 from chemprojector.chem.matrix import ReactantReactionMatrix
 from chemprojector.chem.stack import create_stack_step_by_step
 from chemprojector.utils.train import worker_init_fn
+from skimage.util import view_as_blocks
 
 from .collate import (
     apply_collate,
@@ -18,23 +18,41 @@ from .collate import (
     collate_2d_tokens,
     collate_padding_masks,
     collate_tokens,
+    collate_3d_grid,
+    collate_shape_patches,
 )
 from .common import ProjectionBatch, ProjectionData, create_data
 
+import sys
+from chemprojector.chem.fpindex import FingerprintIndex
+sys.modules['__main__'].FingerprintIndex = FingerprintIndex
+
+def get_shape_patches(shape, patch_size):
+    assert shape.shape[0] % patch_size == 0 
+    shape_patches = view_as_blocks(shape, (patch_size, patch_size, patch_size))
+    return shape_patches
 
 class Collater:
-    def __init__(self, max_num_atoms: int = 96, max_smiles_len: int = 192, max_num_tokens: int = 24):
+    def __init__(self, max_num_atoms: int = 96, max_smiles_len: int = 192, max_num_tokens: int = 24, encoder_type: str = "shape"):
         super().__init__()
         self.max_num_atoms = max_num_atoms
         self.max_smiles_len = max_smiles_len
         self.max_num_tokens = max_num_tokens
+        self.encoder_type = encoder_type
 
+        self.spec_shapes = {
+            "shape": collate_3d_grid,
+            "shape_patches": collate_shape_patches
+        }
+        '''
+        
         self.spec_atoms = {
             "atoms": collate_tokens,
             "bonds": collate_2d_tokens,
             "atom_padding_mask": collate_padding_masks,
         }
         self.spec_smiles = {"smiles": collate_tokens}
+        '''
         self.spec_tokens = {
             "token_types": collate_tokens,
             "rxn_indices": collate_tokens,
@@ -45,12 +63,19 @@ class Collater:
     def __call__(self, data_list: list[ProjectionData]) -> ProjectionBatch:
         data_list_t = cast(list[dict[str, torch.Tensor]], data_list)
         batch = {
-            **apply_collate(self.spec_atoms, data_list_t, max_size=self.max_num_atoms),
-            **apply_collate(self.spec_smiles, data_list_t, max_size=self.max_smiles_len),
             **apply_collate(self.spec_tokens, data_list_t, max_size=self.max_num_tokens),
+            **apply_collate(self.spec_shapes, data_list_t, max_size=None),
             "mol_seq": [d["mol_seq"] for d in data_list],
             "rxn_seq": [d["rxn_seq"] for d in data_list],
         }
+        '''
+        # Only include structural data if not using shape encoder
+        if self.encoder_type != "shape":
+            batch.update({
+                **apply_collate(self.spec_atoms, data_list_t, max_size=self.max_num_atoms),
+                **apply_collate(self.spec_smiles, data_list_t, max_size=self.max_smiles_len),
+            })
+        '''
         return cast(ProjectionBatch, batch)
 
 
@@ -59,11 +84,12 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
         self,
         reaction_matrix: ReactantReactionMatrix,
         fpindex: FingerprintIndex,
+        virtual_length: int = 65536,
         max_num_atoms: int = 80,
         max_smiles_len: int = 192,
         max_num_reactions: int = 5,
         init_stack_weighted_ratio: float = 0.0,
-        virtual_length: int = 65536,
+        encoder_type: str = "shape",
     ) -> None:
         super().__init__()
         self._reaction_matrix = reaction_matrix
@@ -73,9 +99,12 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
         self._fpindex = fpindex
         self._init_stack_weighted_ratio = init_stack_weighted_ratio
         self._virtual_length = virtual_length
+        self.encoder_type = encoder_type
 
     def __len__(self) -> int:
         return self._virtual_length
+
+    
 
     def __iter__(self):
         while True:
@@ -97,8 +126,25 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
                     rxn_seq=rxn_seq_full,
                     rxn_idx_seq=rxn_idx_seq_full,
                     fpindex=self._fpindex,
+                    encoder_type=self.encoder_type
                 )
-                data["smiles"] = data["smiles"][: self._max_smiles_len]
+                #data["smiles"] = data["smiles"][: self._max_smiles_len]
+                
+                # Get shapes directly from fpindex
+                mol_idx = mol_idx_seq_full[-1]  # Get index of product molecule
+                if mol_idx in self._fpindex.shapes:
+                    # Get random rotation index
+                    rotation_idx = random.randrange(len(self._fpindex.shapes[mol_idx]))
+                    # Use same rotation index for both shape and patches
+                    shape = self._fpindex.shapes[mol_idx][rotation_idx]
+                    shape_patches = self._fpindex.shape_patches[mol_idx][rotation_idx]
+                    
+                    data['shape'] = torch.tensor(shape, dtype=torch.float)
+                    data['shape_patches'] = torch.tensor(shape_patches, dtype=torch.float)
+                else:
+                    data['shape'] = torch.zeros((21, 21, 21))
+                    data['shape_patches'] = torch.zeros((343, 27))
+                    
                 yield data
 
 
@@ -115,6 +161,7 @@ class ProjectionDataModule(pl.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.dataset_options = kwargs
+        self.encoder_type = config.model.encoder_type
 
     def setup(self, stage: str | None = None) -> None:
         trainer = self.trainer
@@ -157,7 +204,7 @@ class ProjectionDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             drop_last=True,
-            collate_fn=Collater(),
+            collate_fn=Collater(encoder_type=self.encoder_type),
             worker_init_fn=worker_init_fn,
             persistent_workers=True,
         )
@@ -167,7 +214,7 @@ class ProjectionDataModule(pl.LightningDataModule):
             self.val_dataset,
             batch_size=self.batch_size,
             num_workers=1,
-            collate_fn=Collater(),
+            collate_fn=Collater(encoder_type=self.encoder_type),
             worker_init_fn=worker_init_fn,
             persistent_workers=True,
         )

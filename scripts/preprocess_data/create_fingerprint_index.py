@@ -6,7 +6,7 @@ from omegaconf import DictConfig, OmegaConf
 from chemprojector.chem.fpindex import create_fingerprint_index_cache
 from chemprojector.chem.mol import FingerprintOption
 
-_default_sdf_path = pathlib.Path("data/Enamine_Rush-Delivery_Building_Blocks-US_223244cmpd_20231001.sdf")
+_default_sdf_path = pathlib.Path("data/Enamine_Rush-Delivery_Building_Blocks-US_249948cmpd_20241108.sdf")
 
 
 @click.command()
@@ -20,7 +20,7 @@ _default_sdf_path = pathlib.Path("data/Enamine_Rush-Delivery_Building_Blocks-US_
     type=click.Path(exists=True, path_type=pathlib.Path),
     default=_default_sdf_path,
 )
-@click.option("--out", type=click.Path(path_type=pathlib.Path), default=pathlib.Path("data/processed/all/fpindex.pkl"))
+@click.option("--out", type=click.Path(path_type=pathlib.Path), default=pathlib.Path("data/processed/all/fpindex_gaussian_ph4.pkl"))
 def fpindex(model_config: DictConfig, molecule: pathlib.Path, out: pathlib.Path):
     if out.exists():
         click.confirm(f"{out} already exists. Overwrite?", abort=True)
