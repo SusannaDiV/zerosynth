@@ -28,6 +28,7 @@ share/python-wheels/
 *.egg
 MANIFEST
 third_party/
+third_party/ACP4
 scripts/preprocess_data/splitpkltoobid.py
 # PyInstaller
 #  Usually these files are written by a python script from a template
