@@ -74,15 +74,19 @@ def compute_fingerprints(
 
 
 class FingerprintIndex:
-    def __init__(self, molecules: Iterable[Molecule], fp_option: FingerprintOption) -> None:
+    def __init__(self, molecules: Iterable[Molecule], fp_option: FingerprintOption, encoder_type: str = None) -> None:
         super().__init__()
         self._molecules = tuple(molecules)
         self._fp_option = fp_option
         self._fp = self._init_fingerprint()
-        self._shapes, self._shape_patches = self._init_shapes()
+        self._shapes = None
+        self._shape_patches = None
         self._tree = self._init_tree()
-    
-    
+        
+        # Only initialize shapes if using shape encoder
+        if encoder_type == "shape":
+            self._shapes, self._shape_patches = self._init_shapes()
+
     def get_shape_with_memory_check(cavity, atom_stamp, resolution, box_size):
         """Wrapper to check memory requirements before shape computation"""
         # Calculate required memory
@@ -205,10 +209,14 @@ class FingerprintIndex:
 
     @property
     def shapes(self) -> dict[int, list[np.ndarray]]:
+        if self._shapes is None:
+            return {}
         return self._shapes
 
     @property
     def shape_patches(self) -> dict[int, list[np.ndarray]]:
+        if self._shape_patches is None:
+            return {}
         return self._shape_patches
 
     def get_shapes(self, index: int) -> list[np.ndarray]:
@@ -295,9 +303,10 @@ def create_fingerprint_index_cache(
     molecule_path: pathlib.Path,
     cache_path: pathlib.Path,
     fp_option: FingerprintOption,
+    encoder_type: str = None,
 ):
     mols = list(read_mol_file(molecule_path))
-    fpindex = FingerprintIndex(mols, fp_option=fp_option)
+    fpindex = FingerprintIndex(mols, fp_option=fp_option, encoder_type=encoder_type)
     with open(cache_path, "wb") as f:
         pickle.dump(fpindex, f)
     return fpindex
