@@ -20,9 +20,6 @@ from .base import Drawable
 from .featurize import atom_features_simple, bond_features_simple, tokenize_smiles
 from .gaussian_ph4 import GaussianPH4Generator
 from .allinacp4_ph4 import FEATURE_TYPES
-from e3fp.pipeline import fprints_from_mol
-from e3fp.conformer.util import mol_from_sdf
-from e3fp.fingerprint.fprint import Fingerprint, CountFingerprint
 
 @dataclasses.dataclass(frozen=True, eq=True, unsafe_hash=True)
 class FingerprintOption:
@@ -38,15 +35,9 @@ class FingerprintOption:
     gaussian_sigma: float = 1.0
     gaussian_distance_cutoff: float = 12.0
     gaussian_normalize: bool = True
-    # E3FP options
-    e3fp_bits: int = 4096
-    e3fp_radius_multiplier: float = 1.5
-    e3fp_max_energy_diff: float = 20.0
-    e3fp_first: int = 3
-    e3fp_rdkit_invariants: bool = True
 
     def __post_init__(self):
-        supported_types = ("morgan", "rdkit", "gobbi_pharm2d", "ph4", "gaussian_ph4", "e3fp")
+        supported_types = ("morgan", "rdkit", "gobbi_pharm2d", "ph4", "gaussian_ph4")
         if self.type not in supported_types:
             raise ValueError(f"Unsupported fingerprint type: {self.type}")
 
@@ -94,17 +85,6 @@ class FingerprintOption:
             gaussian_normalize=True,
         )
 
-    @classmethod
-    def e3fp(cls):
-        return FingerprintOption(
-            type="e3fp",
-            e3fp_bits=4096,
-            e3fp_radius_multiplier=1.5,
-            e3fp_max_energy_diff=20.0,
-            e3fp_first=3,
-            e3fp_rdkit_invariants=True,
-        )
-
     @property
     def dim(self) -> int:
         if self.type == "morgan":
@@ -117,8 +97,6 @@ class FingerprintOption:
             return self.ph4_dim 
         elif self.type == "gaussian_ph4":
             return 63
-        elif self.type == "e3fp":
-            return self.e3fp_bits
         raise ValueError(f"Unsupported fingerprint type: {self.type}")
 
 
@@ -235,58 +213,8 @@ class Molecule(Drawable):
                 normalize=option.gaussian_normalize,
             )
             return gaussian_ph4_generator.get_fingerprint(self._rdmol)
-        elif option.type == "e3fp":
-            # Configure logging to suppress INFO messages
-            import logging
-            logging.getLogger("e3fp").setLevel(logging.WARNING)
-            
-            # Configure E3FP parameters
-            fprint_params = {
-                'bits': option.e3fp_bits,
-                'radius_multiplier': option.e3fp_radius_multiplier,
-                'rdkit_invariants': option.e3fp_rdkit_invariants
-            }
-            
-            try:
-                # Generate conformer if not already present
-                if not self.has_conformer:
-                    rdmol = Chem.AddHs(self._rdmol)
-                    AllChem.EmbedMolecule(rdmol, randomSeed=42)
-                    AllChem.MMFFOptimizeMolecule(rdmol)
-                    rdmol = Chem.RemoveHs(rdmol)
-                    self.store_conformer(rdmol)
-                
-                # Use molecule with conformer
-                fprints = fprints_from_mol(self._rdmol, fprint_params=fprint_params)
-                
-                # Convert to vector format
-                if len(fprints) > 0:
-                    # Convert to Fingerprint object first
-                    fp = Fingerprint(fprints[0].indices, 
-                                   bits=option.e3fp_bits,
-                                   level=0,
-                                   name=self.smiles)
-                    
-                    # Get sparse vector representation
-                    vec = fp.to_vector(sparse=True)
-                    
-                    if as_bitvec:
-                        return vec
-                    # Convert to float32 while keeping sparsity
-                    return vec.astype(np.float32)
-                else:
-                    # Return zero vector if no fingerprints generated
-                    if as_bitvec:
-                        return Fingerprint([], bits=option.e3fp_bits).to_vector(sparse=True)
-                    return Fingerprint([], bits=option.e3fp_bits).to_vector(sparse=True).astype(np.float32)
-                    
-            except Exception as e:
-                print(f"Warning: E3FP fingerprint generation failed: {str(e)}")
-                if as_bitvec:
-                    return Fingerprint([], bits=option.e3fp_bits).to_vector(sparse=True)
-                return Fingerprint([], bits=option.e3fp_bits).to_vector(sparse=True).astype(np.float32)
         else:
-            raise ValueError(f"Unsupported fingerprint type: {option.type}")
+            raise ValueError(f"Unsupported fingerprinttttttt type: {option.type}")
 
         if as_bitvec:
             return bit_vec
@@ -339,19 +267,6 @@ class Molecule(Drawable):
     @cached_property
     def csmiles_sha256(self) -> bytes:
         return hashlib.sha256(self.csmiles.encode()).digest()
-
-    @property
-    def has_conformer(self) -> bool:
-        return self._rdmol.GetNumConformers() > 0
-
-    def store_conformer(self, rdmol_with_conformer: Chem.Mol) -> None:
-        """Store a conformer from another RDKit molecule"""
-        if rdmol_with_conformer.GetNumConformers() == 0:
-            raise ValueError("Input molecule has no conformers")
-        
-        # Copy the conformer to our molecule
-        conformer = rdmol_with_conformer.GetConformer()
-        self._rdmol.AddConformer(conformer)
 
 
 def read_mol_file(

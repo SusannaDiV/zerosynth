@@ -37,15 +37,7 @@ def _fill_fingerprint(
 ):
     os.sched_setaffinity(0, range(os.cpu_count() or 1))
     for i, mol in enumerate(molecules):
-        sparse_fp = mol.get_fingerprint(fp_option)
-        # Convert sparse to dense array and ensure binary values
-        dense_fp = sparse_fp.toarray()[0]
-        # For E3FP float fingerprints, convert to binary
-        if fp_option.type == "e3fp":
-            dense_fp = (dense_fp > 0).astype(np.uint8)
-        else:
-            dense_fp = dense_fp.astype(np.uint8)
-        fp[offset + i] = dense_fp
+        fp[offset + i] = mol.get_fingerprint(fp_option).astype(np.uint8)
 
 
 def compute_fingerprints(
@@ -149,10 +141,9 @@ class FingerprintIndex:
                 AllChem.EmbedMolecule(rdmol, randomSeed=42)
                 AllChem.MMFFOptimizeMolecule(rdmol)
                 rdmol = Chem.RemoveHs(rdmol)
-                mol.store_conformer(rdmol)
                 
-                # Create cavity using the stored conformer
-                cavity = Chem.Mol(mol._rdmol)
+                # Create cavity 
+                cavity = Chem.Mol(rdmol)
                 cavity_centroid = get_mol_centroid(cavity)
                 cavity = centralize(cavity)
                 
