@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --output=/itet-stor/sdivita/net_scratch/shitong/ChemProjector/jobs/%j.out
 #SBATCH --error=/itet-stor/sdivita/net_scratch/shitong/ChemProjector/jobs/%j.err
-##SBATCH --mem=68G
+##SBATCH --mem=268G
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gres=gpu:4
-#SBATCH --nodelist=tikgpu[10]  # For Titan RTX GPUs
+##SBATCH --nodelist=tikgpu[10]  # For Titan RTX GPUs
 ETH_USERNAME=sdivita
 PROJECT_NAME=ChemProjector
 DIRECTORY=/itet-stor/${ETH_USERNAME}/net_scratch/shitong/${PROJECT_NAME}
@@ -36,11 +36,7 @@ echo "Conda activated"
 cd ${DIRECTORY}
 
 # Execute training script with optimized parameters
-python train.py configs/shape_3dfing_smaller.yml \
-    --batch-size 32 \ #16
-    --num-workers 4 \
-    --devices 1 \ #4
-    --log-dir /itet-stor/sdivita/net_scratch/shitong/ChemProjector/runs  #&& python scripts/sbdd/10-run_docking.py && python scripts/sbdd/20-summarize.py
+python train.py configs/shape_default.yml --batch-size 16 --num-workers 4 --devices 4 --log-dir /itet-stor/sdivita/net_scratch/shitong/ChemProjector/runs  #&& python scripts/sbdd/10-run_docking.py && python scripts/sbdd/20-summarize.py
 
 # Log completion
 echo "Finished at: $(date)"
