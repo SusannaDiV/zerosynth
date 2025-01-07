@@ -37,9 +37,9 @@ cd ${DIRECTORY}
 
 # Execute training script with optimized parameters
 python train.py configs/shape_default.yml \
-    --batch-size 32 \
+    --batch-size 32 \ #16
     --num-workers 4 \
-    --devices 1 \
+    --devices 1 \ #4
     --log-dir /itet-stor/sdivita/net_scratch/shitong/ChemProjector/runs  #&& python scripts/sbdd/10-run_docking.py && python scripts/sbdd/20-summarize.py
 
 # Log completion
