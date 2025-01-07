@@ -20,19 +20,17 @@ _default_sdf_path = pathlib.Path("data/Enamine_Rush-Delivery_Building_Blocks-US_
     type=click.Path(exists=True, path_type=pathlib.Path),
     default=_default_sdf_path,
 )
-@click.option("--out", type=click.Path(path_type=pathlib.Path), default=pathlib.Path("data/processed/all/fpindex_e3fp.pkl"))
+@click.option("--out", type=click.Path(path_type=pathlib.Path), default=pathlib.Path("data/processed/all/fpindex_e3fp_2048.pkl"))
 def fpindex(model_config: DictConfig, molecule: pathlib.Path, out: pathlib.Path):
     if out.exists():
         click.confirm(f"{out} already exists. Overwrite?", abort=True)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     fp_option = FingerprintOption(**model_config.chem.fp_option)
-    encoder_type = model_config.model.encoder_type
     fpindex = create_fingerprint_index_cache(
         molecule_path=molecule,
         cache_path=out,
         fp_option=fp_option,
-        encoder_type=encoder_type
     )
     print(f"Number of molecules: {len(fpindex.molecules)}")
     print(f"Saved index to {out}")

@@ -36,7 +36,7 @@ echo "Conda activated"
 cd ${DIRECTORY}
 
 # Execute training script with optimized parameters
-python train.py configs/shape_default.yml \
+python train.py configs/original_default.yml \
     --batch-size 32 \ #16
     --num-workers 4 \
     --devices 1 \ #4

@@ -74,20 +74,15 @@ def compute_fingerprints(
 
 
 class FingerprintIndex:
-    def __init__(self, molecules: Iterable[Molecule], fp_option: FingerprintOption, encoder_type: str = None) -> None:
+    def __init__(self, molecules: Iterable[Molecule], fp_option: FingerprintOption) -> None:
         super().__init__()
         self._molecules = tuple(molecules)
         self._fp_option = fp_option
         self._fp = self._init_fingerprint()
-        self._shapes = None
-        self._shape_patches = None
+        self._shapes, self._shape_patches = self._init_shapes()
         self._tree = self._init_tree()
-        
-        # Only initialize shapes if using shape encoder
-        if encoder_type == "shape":
-            self._shapes, self._shape_patches = self._init_shapes()
-
-    @staticmethod
+    
+    
     def get_shape_with_memory_check(cavity, atom_stamp, resolution, box_size):
         """Wrapper to check memory requirements before shape computation"""
         # Calculate required memory
@@ -113,7 +108,7 @@ class FingerprintIndex:
             rotation[:3, :3] = rotation_mat
             rdMolTransforms.TransformConformer(cavity_conformer, rotation)
             
-            curr_cavity_shape = self.get_shape_with_memory_check(
+            curr_cavity_shape = get_shape_with_memory_check(
                 copied_cavity, atom_stamp, resolution, box_size
             )
             
@@ -210,14 +205,10 @@ class FingerprintIndex:
 
     @property
     def shapes(self) -> dict[int, list[np.ndarray]]:
-        if self._shapes is None:
-            return {}
         return self._shapes
 
     @property
     def shape_patches(self) -> dict[int, list[np.ndarray]]:
-        if self._shape_patches is None:
-            return {}
         return self._shape_patches
 
     def get_shapes(self, index: int) -> list[np.ndarray]:
