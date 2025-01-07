@@ -177,7 +177,7 @@ def run_parallel_sampling(
     search_width: int = 24,
     exhaustiveness: int = 64,
     num_gpus: int = -1,
-    num_workers_per_gpu: int = 2,
+    num_workers_per_gpu: int = 2, #from 2 to 1
     task_qsize: int = 0,
     result_qsize: int = 0,
     time_limit: int = 180,
