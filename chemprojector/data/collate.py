@@ -34,9 +34,12 @@ def collate_padding_masks(masks: Sequence[torch.Tensor], max_size: int) -> torch
     return torch.stack(masks_padded, dim=0)
 
 
-def collate_shape_patches(features: Sequence[torch.Tensor], max_size: int = None) -> torch.Tensor:
-    """Collate shape patches without padding since they're all same size"""
-    return torch.stack(features, dim=0)
+def collate_shape_patches(features: Sequence[torch.Tensor], max_size: int = None) -> dict[str, torch.Tensor]:
+    """Collate shape patches with position information"""
+    patches = torch.stack(features, dim=0)
+    return {
+        "shape_patches": patches,
+    }
 
 
 def collate_3d_grid(features: Sequence[torch.Tensor], max_size: int = None) -> torch.Tensor:

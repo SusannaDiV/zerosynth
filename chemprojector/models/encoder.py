@@ -112,24 +112,48 @@ class ShapeEncoder(BaseEncoder):
     def __init__(
         self,
         patch_size: int = 3,
-        d_model: int = 512,#d_model: int = 256, done to match the decoder
+        d_model: int = 512,
         nhead: int = 8,
         num_layers: int = 6,
-        max_seq_length: int = 3000
+        max_seq_length: int = 3000,
+        grid_resolution: float = 0.5,
+        max_dist: float = 15.0,
+        num_rotation_angles: int = 24
     ):
         super().__init__()
         self._dim = d_model
         self._patch_size = patch_size
         
+        # Patch embedding
         self._patch_ffn = nn.Sequential(
             nn.Linear(patch_size**3, d_model),
             nn.ReLU(),
             nn.Linear(d_model, d_model)
         )
-        self._pos_embed = nn.Parameter(torch.zeros(1, max_seq_length, d_model))
+        
+        # Position encoding
+        self.register_buffer(
+            "position_encoding",
+            get_grid_position_encoding(30, patch_size, grid_resolution, max_dist)
+        )
+        self._pos_encoder = nn.Linear(3, d_model)
+        
+        # Rotation encoding
+        self.register_buffer(
+            "rotation_encoding",
+            get_rotation_encoding(num_rotation_angles)
+        )
+        self._rot_encoder = nn.Linear(9, d_model)
+        
         self._embed_dropout = nn.Dropout(0.1)
+        
+        # Transformer
         self._transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead),
+            nn.TransformerEncoderLayer(
+                d_model=d_model,
+                nhead=nhead,
+                batch_first=False
+            ),
             num_layers=num_layers
         )
         self._norm = nn.LayerNorm(d_model)
@@ -145,13 +169,17 @@ class ShapeEncoder(BaseEncoder):
         shape_patches = batch["shape_patches"]
         bz, sl, _ = shape_patches.size()
         
-        x = self._patch_ffn(shape_patches)
+        # Patch embedding
+        x = self._patch_ffn(shape_patches)  # [B, N, D]
         
-        if sl > self._pos_embed.size(1):
-            raise ValueError(f"Sequence length {sl} exceeds positional embedding size {self._pos_embed.size(1)}")
+        # Add position encoding
+        pos_enc = self._pos_encoder(self.position_encoding[:sl])  # [N, D]
+        x = x + pos_enc.unsqueeze(0)  # [B, N, D]
         
-        pos = torch.arange(sl).unsqueeze(0).repeat(bz, 1).to(x.device)
-        x = x + self._pos_embed[:, :sl]
+        # Add rotation encoding
+        rot_enc = self._rot_encoder(self.rotation_encoding.view(-1, 9))  # [72, D]
+        x = x + rot_enc.mean(0, keepdim=True).unsqueeze(0)  # [B, N, D]
+        
         x = self._embed_dropout(x)
         
         # Create padding mask (assuming no padding for now)
@@ -162,7 +190,7 @@ class ShapeEncoder(BaseEncoder):
         x = self._norm(x)
         x = x.transpose(0, 1)  # Convert back to (batch, seq_len, d_model)
         
-        return x, padding_mask 
+        return x, padding_mask
 
 def get_encoder(t: str, cfg) -> BaseEncoder:
     if t == "smiles":
@@ -170,7 +198,7 @@ def get_encoder(t: str, cfg) -> BaseEncoder:
     elif t == "graph":
         return GraphEncoder(**cfg)
     elif t == "shape":
-        print("RRUNING SHAPE ENCODER")
         return ShapeEncoder(**cfg)
     else:
         raise ValueError(f"Unknown encoder type: {t}")
+
