@@ -19,7 +19,7 @@ from rdkit.Chem import rdMolTransforms, AllChem
 from skimage.util import view_as_blocks
 
 from .mol import FingerprintOption, Molecule, read_mol_file
-from .tfbio_data import get_atom_stamp, make_grid, get_binary_features, ROTATIONS, get_shape
+from .tfbio_data import get_atom_stamp, make_grid, get_binary_features, ROTATIONS
 
 @dataclasses.dataclass
 class _QueryResult:
@@ -87,6 +87,7 @@ class FingerprintIndex:
         if encoder_type == "shape":
             self._shapes, self._shape_patches = self._init_shapes()
 
+    @staticmethod
     def get_shape_with_memory_check(cavity, atom_stamp, resolution, box_size):
         """Wrapper to check memory requirements before shape computation"""
         # Calculate required memory
@@ -309,18 +310,3 @@ def create_fingerprint_index_cache(
     with open(cache_path, "wb") as f:
         pickle.dump(fpindex, f)
     return fpindex
-
-def get_mol_centroid(mol):
-    """Calculate the centroid of a molecule"""
-    conf = mol.GetConformer()
-    positions = conf.GetPositions()
-    return np.mean(positions, axis=0)
-
-def centralize(mol):
-    """Center a molecule at origin"""
-    conf = mol.GetConformer()
-    centroid = get_mol_centroid(mol)
-    for i in range(mol.GetNumAtoms()):
-        pos = conf.GetAtomPosition(i)
-        conf.SetAtomPosition(i, pos - centroid)
-    return mol
