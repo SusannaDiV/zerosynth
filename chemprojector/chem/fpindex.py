@@ -19,7 +19,7 @@ from rdkit.Chem import rdMolTransforms, AllChem
 from skimage.util import view_as_blocks
 
 from .mol import FingerprintOption, Molecule, read_mol_file
-from .tfbio_data import get_atom_stamp, make_grid, get_binary_features, ROTATIONS
+from .tfbio_data import get_atom_stamp, make_grid, get_binary_features, ROTATIONS, get_shape
 
 @dataclasses.dataclass
 class _QueryResult:
@@ -112,7 +112,7 @@ class FingerprintIndex:
             rotation[:3, :3] = rotation_mat
             rdMolTransforms.TransformConformer(cavity_conformer, rotation)
             
-            curr_cavity_shape = get_shape_with_memory_check(
+            curr_cavity_shape = self.get_shape_with_memory_check(
                 copied_cavity, atom_stamp, resolution, box_size
             )
             
@@ -303,10 +303,24 @@ def create_fingerprint_index_cache(
     molecule_path: pathlib.Path,
     cache_path: pathlib.Path,
     fp_option: FingerprintOption,
-    encoder_type: str = None,
 ):
     mols = list(read_mol_file(molecule_path))
-    fpindex = FingerprintIndex(mols, fp_option=fp_option, encoder_type=encoder_type)
+    fpindex = FingerprintIndex(mols, fp_option=fp_option)
     with open(cache_path, "wb") as f:
         pickle.dump(fpindex, f)
     return fpindex
+
+def get_mol_centroid(mol):
+    """Calculate the centroid of a molecule"""
+    conf = mol.GetConformer()
+    positions = conf.GetPositions()
+    return np.mean(positions, axis=0)
+
+def centralize(mol):
+    """Center a molecule at origin"""
+    conf = mol.GetConformer()
+    centroid = get_mol_centroid(mol)
+    for i in range(mol.GetNumAtoms()):
+        pos = conf.GetAtomPosition(i)
+        conf.SetAtomPosition(i, pos - centroid)
+    return mol
