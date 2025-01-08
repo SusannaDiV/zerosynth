@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --output=/itet-stor/sdivita/net_scratch/shitong/ChemProjector/jobs/%j.out
 #SBATCH --error=/itet-stor/sdivita/net_scratch/shitong/ChemProjector/jobs/%j.err
-##SBATCH --mem=268G
+##SBATCH --mem=98G
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gres=gpu:4
-##SBATCH --nodelist=tikgpu[10]  # For Titan RTX GPUs
+#SBATCH --nodelist=tikgpu[08-10]  # For Titan RTX GPUs
 ETH_USERNAME=sdivita
 PROJECT_NAME=ChemProjector
 DIRECTORY=/itet-stor/${ETH_USERNAME}/net_scratch/shitong/${PROJECT_NAME}
