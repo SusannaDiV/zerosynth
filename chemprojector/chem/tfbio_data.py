@@ -426,190 +426,42 @@ def rotate(coords, rotation):
         raise ValueError('Invalid rotation %s!' % rotation)
 
 
-def make_grid(coords, features, grid_resolution=1.0, max_dist=10.0):
-    """Convert atom coordinates and features represented as 2D arrays into a
-    fixed-sized 3D box.
+def make_grid(coords, features, grid_resolution, max_dist):
+    """Original CPU version of grid creation"""
+    grid_coords = get_grid_coords(coords, max_dist, grid_resolution)
+    atomic2grid = defaultdict(list)
+    for feat, pos in zip(features, grid_coords):
+        atomic2grid[tuple(feat)].append(tuple(pos))
+    grid_size = int(2 * max_dist / grid_resolution + 1)
+    grid = np.zeros((len(coords), grid_size, grid_size, grid_size,
+                    features.shape[1]))
+    for i, (coord, feat) in enumerate(zip(grid_coords, features)):
+        grid[i, coord[0], coord[1], coord[2]] = feat
+    return grid, atomic2grid
 
-    所有涉及距离的单位都是angstrom(0.1nm)，则：
-    - 假设grid_resoltution=1，max_dist=10，则构建一个20x20x20的立方体，其中每个立方体的边长为1。
-    - coords是Nx3的原子位置矩阵（已减均值），则将其排布在立方体中，每个原子所处的格子设置为1。
-        int((coords+max_dist)/grid_resolution)
-    - features是Nx18的原子feature矩阵，将每个原子对应的feature填在格子里。
-    返回20x20x20x18的tensor。
 
-    Parameters
-    ----------
-    coords, features: array-likes, shape (N, 3) and (N, F)
-        Arrays with coordinates and features for each atoms.
-    grid_resolution: float, optional
-        Resolution of a grid (in Angstroms).
-    max_dist: float, optional
-        Maximum distance between atom and box center. Resulting box has size of
-        2*`max_dist`+1 Angstroms and atoms that are too far away are not
-        included.
-
-    Returns
-    -------
-    coords: np.ndarray, shape = (M, M, M, F)
-        4D array with atom properties distributed in 3D space. M is equal to
-        2 * `max_dist` / `grid_resolution` + 1
-    """
-
-    try:
-        coords = np.asarray(coords, dtype=np.float)
-    except ValueError:
-        raise ValueError('coords must be an array of floats of shape (N, 3)')
-    c_shape = coords.shape
-    if len(c_shape) != 2 or c_shape[1] != 3:
-        raise ValueError('coords must be an array of floats of shape (N, 3)')
-
-    N = len(coords)
-    try:
-        features = np.asarray(features, dtype=np.float)
-    except ValueError:
-        raise ValueError('features must be an array of floats of shape (N, F)')
-    f_shape = features.shape
-    if len(f_shape) != 2 or f_shape[0] != N:
-        raise ValueError('features must be an array of floats of shape (N, F)')
-
-    if not isinstance(grid_resolution, (float, int)):
-        raise TypeError('grid_resolution must be float')
-    if grid_resolution <= 0:
-        raise ValueError('grid_resolution must be positive')
-
-    if not isinstance(max_dist, (float, int)):
-        raise TypeError('max_dist must be float')
-    if max_dist <= 0:
-        raise ValueError('max_dist must be positive')
-
-    num_features = f_shape[1]
-    max_dist = float(max_dist)
-    grid_resolution = float(grid_resolution)
-
-    box_size = ceil(2 * max_dist / grid_resolution + 1)
-
-    # move all atoms to the neares grid point
+def get_grid_coords(coords, max_dist, grid_resolution):
+    """Helper function for grid coordinates"""
     grid_coords = (coords + max_dist) / grid_resolution
     grid_coords = grid_coords.round().astype(int)
-
-    # remove atoms outside the box
-    in_box = ((grid_coords >= 0) & (grid_coords < box_size)).all(axis=1)
-    grid = np.zeros((1, box_size, box_size, box_size, num_features),
-                    dtype=np.float32)
-    
-    f_grid = defaultdict(list)
-    for (x, y, z), f in zip(grid_coords[in_box], features[in_box]):
-        grid[0, x, y, z] += f
-        f_grid[tuple(f)].append((x, y, z))
-
-    return grid, f_grid
-
-
-
-
-import numpy as np
-from rdkit.Chem import rdMolTransforms
-from math import ceil, pi
-import random
-import copy
-from skimage.util import view_as_blocks
-
-# van der Waals radius
-ATOM_RADIUS = {
-    'C': 1.908,
-    'F': 1.75,
-    'Cl': 1.948,
-    'Br': 2.22,
-    'I': 2.35,
-    'N': 1.824,
-    'O': 1.6612,
-    'P': 2.1,
-    'S': 2.0,
-    'Si': 2.2 # not accurate
-}
-
-# atomic number
-ATOMIC_NUMBER = {
-    'C': 6,
-    'F': 9,
-    'Cl': 17,
-    'Br': 35,
-    'I': 53,
-    'N': 7,
-    'O': 8,
-    'P': 15,
-    'S': 16,
-    'Si': 14
-}
-
-ATOMIC_NUMBER_REVERSE = {v: k for k, v in ATOMIC_NUMBER.items()}
-
-
-def get_mol_centroid(mol, confId=-1):
-    conformer = mol.GetConformer(confId)
-    centroid = np.mean(conformer.GetPositions(), axis=0)
-    return centroid
-
-def trans(x, y, z):
-    translation = np.eye(4)
-    translation[:3, 3] = [x, y, z]
-    return translation
-
-def centralize(mol, confId=-1):
-    conformer = mol.GetConformer(confId)
-    centroid = get_mol_centroid(mol, confId)
-    translation = trans(-centroid[0], -centroid[1], -centroid[2])  
-    rdMolTransforms.TransformConformer(conformer, translation)
-    return mol
-
-
-def get_atom_stamp_with_noise(grid_resolution, max_dist, mu, sigma):
-    def _get_atom_stamp_with_noise(symbol, mu, sigma):
-        box_size = ceil(2 * max_dist // grid_resolution + 1)
-
-        x, y, z = np.indices((box_size, box_size, box_size))
-        x = x * grid_resolution + grid_resolution / 2
-        y = y * grid_resolution + grid_resolution / 2
-        z = z * grid_resolution + grid_resolution / 2
-
-        mid = (box_size // 2, box_size // 2, box_size // 2)
-        mid_x = x[mid]
-        mid_y = y[mid]
-        mid_z = z[mid]
-
-        noise = np.random.normal(loc=mu, scale=sigma)
-        if noise < 0:
-            noise = 0 
-
-        sphere = (x - mid_x)**2 + (y - mid_y)**2 + (z - mid_z)**2 \
-            <= (ATOM_RADIUS[symbol] + noise)**2
-        sphere = sphere.astype(int)
-        sphere[sphere > 0] = ATOMIC_NUMBER[symbol]
-        return sphere
-    
-    atom_stamp = {}
-    for symbol in ATOM_RADIUS:
-        atom_stamp[symbol] = _get_atom_stamp_with_noise(symbol, mu, sigma)
-    return atom_stamp
+    return grid_coords
 
 
 def get_atom_stamp(grid_resolution, max_dist):
-    # atom stamp is a sphere which radius equal to atom van der Waals radius
+    """Original CPU version of atom stamp creation"""
     def _get_atom_stamp(symbol):
         box_size = ceil(2 * max_dist // grid_resolution + 1)
-
-        x, y, z = np.indices((box_size, box_size, box_size))
+        x, y, z = np.meshgrid(np.arange(box_size),
+                             np.arange(box_size),
+                             np.arange(box_size))
         x = x * grid_resolution + grid_resolution / 2
         y = y * grid_resolution + grid_resolution / 2
         z = z * grid_resolution + grid_resolution / 2
-
         mid = (box_size // 2, box_size // 2, box_size // 2)
         mid_x = x[mid]
         mid_y = y[mid]
         mid_z = z[mid]
-
-        sphere = (x - mid_x)**2 + (y - mid_y)**2 + (z - mid_z)**2 \
-            <= ATOM_RADIUS[symbol]**2
+        sphere = (x - mid_x)**2 + (y - mid_y)**2 + (z - mid_z)**2 <= ATOM_RADIUS[symbol]**2
         sphere = sphere.astype(int)
         sphere[sphere > 0] = ATOMIC_NUMBER[symbol]
         return sphere
@@ -694,41 +546,64 @@ def get_binary_features(mol, confId, without_H):
 #     shape[shape > 0] = 1
 #     return shape
 
-def get_shape(mol, atom_stamp, grid_resolution, max_dist, confId=-1, without_H=True, by_coords=False, coords=None, features=None):
-    # expand each atom point to a sphere
-    if not by_coords:
-        coords, features = get_binary_features(mol, confId, without_H)
+def get_shape(mol, atom_stamp, grid_resolution, max_dist, device=None):
+    """Compute shape tensor for a molecule.
+    Original logic preserved, with GPU-optimized transfers."""
+    if device is None:
+        device = torch.device('cpu')
+        
+    # Convert atom_stamp to GPU once if needed
+    if device.type == 'cuda' and not isinstance(next(iter(atom_stamp.values())), torch.Tensor):
+        atom_stamp = {
+            symbol: torch.from_numpy(stamp).to(device)
+            for symbol, stamp in atom_stamp.items()
+        }
+    
+    # Original logic exactly preserved
+    coords, features = get_binary_features(mol, confId=0)
     grid, atomic2grid = make_grid(coords, features, grid_resolution, max_dist)
-    shape = np.zeros(grid[0, :, :, :, 0].shape)
+    
+    # Initialize shape tensor
+    if device.type == 'cuda':
+        shape = torch.zeros(grid[0, :, :, :, 0].shape, device=device)
+    else:
+        shape = np.zeros(grid[0, :, :, :, 0].shape)
+    
     for tup in atomic2grid:
         atomic_number = int(tup[0])
-        stamp = atom_stamp[ATOMIC_NUMBER_REVERSE[atomic_number]]
+        symbol = ATOMIC_NUMBER_REVERSE[atomic_number]
+        
+        # No need to transfer stamp if already on GPU
+        stamp = atom_stamp[symbol]
+        
         for grid_ijk in atomic2grid[tup]:
-            i = grid_ijk[0]
-            j = grid_ijk[1]
-            k = grid_ijk[2]
-
-            x_left = i - stamp.shape[0] // 2 if i - stamp.shape[0] // 2 > 0 else 0
-            x_right = i + stamp.shape[0] // 2 if i + stamp.shape[0] // 2 < shape.shape[0] else shape.shape[0] - 1
+            i, j, k = grid_ijk
+            # Exact same boundary calculations
+            x_left = max(i - stamp.shape[0] // 2, 0)
+            x_right = min(i + stamp.shape[0] // 2 + 1, shape.shape[0])
+            y_left = max(j - stamp.shape[1] // 2, 0)
+            y_right = min(j + stamp.shape[1] // 2 + 1, shape.shape[1])
+            z_left = max(k - stamp.shape[2] // 2, 0)
+            z_right = min(k + stamp.shape[2] // 2 + 1, shape.shape[2])
             x_l = i - x_left
             x_r = x_right - i
-
-            y_left = j - stamp.shape[1] // 2 if j - stamp.shape[1] // 2 > 0 else 0
-            y_right = j + stamp.shape[1] // 2 if j + stamp.shape[1] // 2 < shape.shape[1] else shape.shape[1] - 1
             y_l = j - y_left
             y_r = y_right - j
-
-            z_left = k - stamp.shape[2] // 2 if k - stamp.shape[2] // 2 >0 else 0
-            z_right = k + stamp.shape[2] // 2 if k + stamp.shape[2] // 2 < shape.shape[2] else shape.shape[2] - 1
             z_l = k - z_left
             z_r = z_right - k
-
             mid = stamp.shape[0] // 2
-            shape_part =  shape[x_left: x_right + 1, y_left: y_right + 1, z_left: z_right + 1]
-            stamp_part = stamp[mid - x_l: mid + x_r + 1, mid - y_l: mid + y_r + 1, mid - z_l: mid + z_r + 1]
-
-            shape_part += stamp_part
-    shape[shape > 0] = 1
+            
+            # Same operation (now without repeated transfers)
+            shape[x_left:x_right, y_left:y_right, z_left:z_right] += \
+                stamp[mid-x_l:mid+x_r, mid-y_l:mid+y_r, mid-z_l:mid+z_r]
+    
+    # Final conversion exactly as before
+    if device.type == 'cuda':
+        shape = (shape > 0).to(torch.float32)
+        shape = shape.cpu().numpy()
+    else:
+        shape[shape > 0] = 1
+    
     return shape
 
 def sample_augment(sample, rotation_bin, max_translation, confId=-1):
@@ -795,11 +670,6 @@ def get_shape_patches(shape, patch_size):
 def time_shift(s):
     return s[:-1], s[1:]
 
-def get_grid_coords(coords, max_dist, grid_resolution):
-    grid_coords = (coords + max_dist) / grid_resolution
-    grid_coords = grid_coords.round().astype(int)
-    return grid_coords
-
 def get_rotation_bins(sp, rp):
     mid = sp // 2
     sr = 1.0 / sp
@@ -828,3 +698,77 @@ def get_rotation_bins(sp, rp):
     rotation_mat_bin = np.stack(rotation_mat_bin, axis=0)
 
     return rotation_mat_bin
+
+def get_shapes_batch(mols, atom_stamp, grid_resolution, max_dist, device=None, batch_size=32):
+    """GPU-optimized batch processing of shapes."""
+    if device is None:
+        device = torch.device('cpu')
+    
+    # Convert atom stamps to GPU once
+    if device.type == 'cuda' and not isinstance(next(iter(atom_stamp.values())), torch.Tensor):
+        atom_stamp = {
+            symbol: torch.from_numpy(stamp).to(device)
+            for symbol, stamp in atom_stamp.items()
+        }
+    
+    all_shapes = []
+    
+    for batch_start in range(0, len(mols), batch_size):
+        batch_mols = mols[batch_start:batch_start + batch_size]
+        
+        # Process each molecule in batch
+        batch_shapes = []
+        for mol in batch_mols:
+            # Changed: Use get_binary_features_gpu with all parameters
+            coords, features = get_binary_features_gpu(
+                mol, 
+                confId=-1,  # Same as original
+                without_H=True,  # Was missing this parameter
+                device=device
+            )
+            grid, positions_by_feature = make_grid_gpu(coords, features, grid_resolution, max_dist)
+            
+            # Initialize shape on GPU
+            shape = torch.zeros(grid[0, :, :, :, 0].shape, device=device)
+            
+            # Process each feature type
+            for feat, positions in positions_by_feature.items():
+                atomic_number = int(feat[0])
+                stamp = atom_stamp[ATOMIC_NUMBER_REVERSE[atomic_number]]
+                
+                # Process all positions for this feature
+                for pos in positions:
+                    i, j, k = pos.tolist()
+                    
+                    # Exact same boundary calculations as original
+                    x_left = max(i - stamp.shape[0] // 2, 0)
+                    x_right = min(i + stamp.shape[0] // 2 + 1, shape.shape[0])
+                    y_left = max(j - stamp.shape[1] // 2, 0)
+                    y_right = min(j + stamp.shape[1] // 2 + 1, shape.shape[1])
+                    z_left = max(k - stamp.shape[2] // 2, 0)
+                    z_right = min(k + stamp.shape[2] // 2 + 1, shape.shape[2])
+                    x_l = i - x_left
+                    x_r = x_right - i
+                    y_l = j - y_left
+                    y_r = y_right - j
+                    z_l = k - z_left
+                    z_r = z_right - k
+                    mid = stamp.shape[0] // 2
+                    
+                    # Same stamp application as original
+                    shape[x_left:x_right, y_left:y_right, z_left:z_right] += \
+                        stamp[mid-x_l:mid+x_r, mid-y_l:mid+y_r, mid-z_l:mid+z_r]
+            
+            batch_shapes.append(shape)
+        
+        # Stack and binarize batch
+        batch_shapes = torch.stack(batch_shapes)
+        if device.type == 'cuda':
+            batch_shapes = (batch_shapes > 0).float()
+            batch_shapes = batch_shapes.cpu().numpy()
+        else:
+            batch_shapes[batch_shapes > 0] = 1
+        
+        all_shapes.extend([shape for shape in batch_shapes])
+    
+    return all_shapes

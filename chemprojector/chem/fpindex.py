@@ -53,42 +53,57 @@ def compute_fingerprints(
             mode="w+",
             shape=(len(molecules), fp_option.dim),
         )
+        
         joblib.Parallel(n_jobs=joblib.cpu_count() // 2)(
             joblib.delayed(_fill_fingerprint)(
                 fp=fp,
                 offset=start,
-                molecules=molecules[start : start + batch_size],
+                molecules=molecules[start:start + batch_size],
                 fp_option=fp_option,
             )
             for start in tqdm(range(0, len(molecules), batch_size), desc="Fingerprint")
         )
+        
         return np.array(fp)
 
 
 class FingerprintIndex:
-    def __init__(self, molecules: Iterable[Molecule], fp_option: FingerprintOption) -> None:
+    def __init__(
+        self, 
+        molecules: Iterable[Molecule], 
+        fp_option: FingerprintOption,
+        device: torch.device = None
+    ) -> None:
         super().__init__()
         self._molecules = tuple(molecules)
         self._fp_option = fp_option
-        self._fp = self._init_fingerprint()
+        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self._fp = self._init_fingerprint(device=self.device)
         self._shapes, self._shape_patches = self._init_shapes()
         self._tree = self._init_tree()
     
     
-    def get_shape_with_memory_check(cavity, atom_stamp, resolution, box_size):
+    def get_shape_with_memory_check(cavity, atom_stamp, resolution, box_size, device=None):
         """Wrapper to check memory requirements before shape computation"""
         # Calculate required memory
         grid_points = int(2 * box_size / resolution) + 1
         required_memory = grid_points**3 * 4  # 4 bytes per float32
         
-        # Check available memory (with 20% buffer)
-        available_memory = psutil.virtual_memory().available * 0.8
+        if device and device.type == 'cuda':
+            # Check GPU memory
+            gpu_memory = torch.cuda.get_device_properties(device).total_memory
+            gpu_memory_available = gpu_memory - torch.cuda.memory_allocated(device)
+            if required_memory > gpu_memory_available * 0.8:  # 20% buffer
+                raise MemoryError(f"Insufficient GPU memory. Need {required_memory/1024/1024:.0f} MB, "
+                                f"have {gpu_memory_available/1024/1024:.0f} MB available")
+        else:
+            # Check CPU memory
+            available_memory = psutil.virtual_memory().available * 0.8
+            if required_memory > available_memory:
+                raise MemoryError(f"Insufficient memory. Need {required_memory/1024:.0f} KiB, "
+                                f"have {available_memory/1024:.0f} KiB available")
         
-        if required_memory > available_memory:
-            raise MemoryError(f"Insufficient memory. Need {required_memory/1024:.0f} KiB, "
-                            f"have {available_memory/1024:.0f} KiB available")
-        
-        return get_shape(cavity, atom_stamp, resolution, box_size)
+        return get_shape(cavity, atom_stamp, resolution, box_size, device=device)
 
     def process_single_rotation(self, mol, rotation_mat, atom_stamp, cavity, resolution=0.5, box_size=15):
         """Process a single rotation of a molecule with pre-computed conformers"""
@@ -169,29 +184,29 @@ class FingerprintIndex:
                 
         return results
 
-    def _init_shapes(self, batch_size: int = 4) -> tuple[dict[int, list[np.ndarray]], dict[int, list[np.ndarray]]]:
+    def _init_shapes(self) -> tuple[dict[int, list[np.ndarray]], dict[int, list[np.ndarray]]]:
         shapes_dict = {}
         patches_dict = {}
-        current_batch = []
         
-        for idx in tqdm(range(0, len(self._molecules), batch_size), desc="Computing shapes"):
-            mol_batch = self._molecules[idx:idx + batch_size]
-            atom_stamp = get_atom_stamp(grid_resolution=0.5, max_dist=4.0)
-            results = self.process_molecule_batch(mol_batch, atom_stamp)
+        # Use get_shapes_batch instead of processing one by one
+        atom_stamp = get_atom_stamp(self._fp_option.grid_resolution, self._fp_option.max_dist_stamp)
+        shapes = get_shapes_batch(
+            self._molecules,
+            atom_stamp,
+            self._fp_option.grid_resolution,
+            self._fp_option.max_dist,
+            device=self.device
+        )
+        
+        # Process shapes into patches as before
+        for mol_idx, shape in enumerate(shapes):
+            mol = self._molecules[mol_idx]
+            mol_id = id(mol)
             
-            # Group shapes by molecule index
-            for result in results:
-                mol_idx = idx + list(mol_batch).index(result['mol'])
-                if mol_idx not in shapes_dict:
-                    shapes_dict[mol_idx] = []
-                    patches_dict[mol_idx] = []
-                shapes_dict[mol_idx].append(result['shape'])
-                patches_dict[mol_idx].append(result['shape_patches'])
+            shape_patches = get_shape_patches(shape, self._fp_option.patch_size)
             
-            # Memory management
-            if len(current_batch) >= 1000:
-                gc.collect()
-                current_batch = []
+            shapes_dict.setdefault(mol_id, []).append(shape)
+            patches_dict.setdefault(mol_id, []).append(shape_patches)
         
         return shapes_dict, patches_dict
 
@@ -214,11 +229,12 @@ class FingerprintIndex:
     def fp_option(self) -> FingerprintOption:
         return self._fp_option
 
-    def _init_fingerprint(self, batch_size: int = 1024) -> np.ndarray:
+    def _init_fingerprint(self, batch_size: int = 1024, device: torch.device = None) -> np.ndarray:
         return compute_fingerprints(
             molecules=self._molecules,
             fp_option=self._fp_option,
             batch_size=batch_size,
+            device=device,
         )
 
     def _init_tree(self) -> BallTree:
@@ -287,9 +303,14 @@ def create_fingerprint_index_cache(
     molecule_path: pathlib.Path,
     cache_path: pathlib.Path,
     fp_option: FingerprintOption,
+    device: torch.device = None,
 ):
     mols = list(read_mol_file(molecule_path))
-    fpindex = FingerprintIndex(mols, fp_option=fp_option)
+    fpindex = FingerprintIndex(
+        mols, 
+        fp_option=fp_option,
+        device=device
+    )
     with open(cache_path, "wb") as f:
         pickle.dump(fpindex, f)
     return fpindex
