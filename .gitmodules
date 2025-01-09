@@ -4,3 +4,6 @@
 [submodule "third_party/FCD"]
 	path = third_party/FCD
 	url = https://github.com/bioinf-jku/FCD
+[submodule "third_party/ACP4"]
+	path = third_party/ACP4
+	url = https://github.com/UnixJunkie/ACP4.git
