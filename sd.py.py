@@ -2,7 +2,7 @@ import pickle
 import numpy as np
 
 # Load the dataset
-with open('/itet-stor/sdivita/net_scratch/shitong/ChemProjector/data/processed/all/fpindex.pkl', 'rb') as f:
+with open('/itet-stor/sdivita/net_scratch/shitong/ChemProjector/data/processed/all/fpindex_gaussian_ph4.pkl', 'rb') as f:
     data = pickle.load(f)
 
 # Function to print structure recursively
