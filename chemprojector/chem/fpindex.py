@@ -90,9 +90,26 @@ class FingerprintIndex:
         
         return get_shape(cavity, atom_stamp, resolution, box_size)
 
+    def _copy_rdmol_with_conformer(self, rdmol: Chem.Mol) -> Chem.Mol:
+        """Helper function to copy an RDKit molecule with its conformer."""
+        if rdmol.GetNumConformers() == 0:
+            raise ValueError("Input molecule has no conformers")
+        
+        # Create new molecule
+        new_mol = Chem.Mol(rdmol)
+        
+        # Copy conformer explicitly
+        conf = rdmol.GetConformer()
+        new_mol.AddConformer(conf)
+        
+        return new_mol
+
     def process_single_rotation(self, mol, rotation_mat, atom_stamp, cavity, resolution=0.5, box_size=15):
         """Process a single rotation of a molecule with pre-computed conformers"""
         try:
+            # Initialize device first
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            
             # Check inputs
             if mol is None:
                 raise ValueError("Molecule is None")
@@ -105,14 +122,9 @@ class FingerprintIndex:
             
             print(f"\nProcessing rotation for {mol.smiles}", flush=True)
             
-            # Copy and rotate cavity
-            copied_cavity = copy.deepcopy(cavity)
-            if copied_cavity is None:
-                raise ValueError("Failed to copy cavity")
-            
+            # Copy and rotate cavity using the helper function
+            copied_cavity = self._copy_rdmol_with_conformer(cavity)
             cavity_conformer = copied_cavity.GetConformer()
-            if cavity_conformer is None:
-                raise ValueError("Failed to get cavity conformer")
             
             rotation = np.zeros((4, 4))
             rotation[:3, :3] = rotation_mat
@@ -150,7 +162,7 @@ class FingerprintIndex:
             # Create rotated molecule for pharmacophore features
             print("Computing pharmacophore features...", flush=True)
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            rotated_mol = copy.deepcopy(mol)
+            rotated_mol = mol.copy_with_conformer()
             if rotated_mol is None:
                 raise ValueError("Failed to copy molecule for rotation")
             
@@ -194,7 +206,7 @@ class FingerprintIndex:
         except Exception as e:
             print(f"\nFAILED ROTATION for {mol.smiles if mol else 'None'}: {str(e)}", flush=True)
             return None
-
+        
     def process_molecule_batch(self, mol_batch, atom_stamp):
         """Process a batch of molecules with parallel rotations"""
         results = []
@@ -260,9 +272,6 @@ class FingerprintIndex:
                 print(f"\nFAILED to process molecule {mol.smiles}: {str(e)}", flush=True)
                 continue
                 
-        if not results:
-            raise ValueError(f"No molecules were successfully processed in batch of size {len(mol_batch)}")
-        
         return results
 
     def _init_shapes(self, batch_size: int = 4) -> tuple[dict[int, list[np.ndarray]], dict[int, list[np.ndarray]], dict[int, list[torch.Tensor]]]:

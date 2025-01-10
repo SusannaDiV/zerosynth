@@ -389,44 +389,20 @@ class Molecule(Drawable):
         types_tensor = torch.tensor(types, dtype=torch.long, device=device)
             
         return coords_tensor, types_tensor
-'''
-    def get_pharmacophore_grid(self, grid_resolution=0.5, box_size=15) -> torch.Tensor:
-        """Convert pharmacophore features to a grid representation"""
-        coords, types = self.get_pharmacophore_features()
-        if len(coords) == 0:
-            return torch.zeros((grid_size, grid_size, grid_size, len(FEATURE_TYPES)))
+
+    def copy_with_conformer(self) -> 'Molecule':
+        """Create a copy of the molecule with its conformer properly copied."""
+        if not self.has_conformer:
+            raise ValueError(f"Original molecule has no conformer: {self.smiles}")
         
-        grid_size = int(2 * box_size / grid_resolution) + 1
-        feature_grids = torch.zeros((grid_size, grid_size, grid_size, len(FEATURE_TYPES)), 
-                                  device=coords.device)
+        # Create new molecule
+        new_mol = Molecule.from_rdmol(Chem.Mol(self._rdmol))
         
-        # Center of the grid
-        center = torch.tensor([box_size, box_size, box_size], device=coords.device)
+        # Copy conformer explicitly
+        conf = self._rdmol.GetConformer()
+        new_mol._rdmol.AddConformer(conf)
         
-        # Fill grids with gaussian representations of features
-        sigma = grid_resolution
-        for i in range(len(coords)):
-            pos = coords[i]
-            feat_type = types[i]
-            
-            # Convert position to grid coordinates
-            grid_pos = ((pos + center) / grid_resolution).long()
-            
-            # Create coordinate grids
-            x = torch.arange(grid_size, device=coords.device)
-            y = torch.arange(grid_size, device=coords.device)
-            z = torch.arange(grid_size, device=coords.device)
-            X, Y, Z = torch.meshgrid(x, y, z, indexing='ij')
-            
-            # Compute gaussian
-            gaussian = torch.exp(-((X - grid_pos[0])**2 + 
-                                 (Y - grid_pos[1])**2 + 
-                                 (Z - grid_pos[2])**2) / (2 * sigma**2))
-            
-            feature_grids[..., feat_type] += gaussian
-        
-        return feature_grids
-'''
+        return new_mol
 
 def read_mol_file(
     path: os.PathLike,
