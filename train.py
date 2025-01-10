@@ -5,6 +5,8 @@ import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf
 from pytorch_lightning import callbacks, loggers, strategies
+from torch.profiler import profile, record_function, ProfilerActivity
+import time
 
 from chemprojector.data.projection_dataset import ProjectionDataModule
 from chemprojector.models.wrapper import ChemProjectorWrapper
@@ -18,6 +20,38 @@ from chemprojector.utils.vc import get_vc_info
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")
+
+
+class ProfilingCallback(callbacks.Callback):
+    def __init__(self):
+        self.batch_start_time = None
+        self.data_load_times = []
+        self.forward_times = []
+        self.backward_times = []
+        
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+        self.batch_start_time = time.time()
+        if batch_idx == 0:  # Start profiler on first batch
+            self.profiler = profile(activities=[
+                ProfilerActivity.CPU,
+                ProfilerActivity.CUDA,
+            ], with_stack=True, record_shapes=True)
+            self.profiler.start()
+    
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        if batch_idx < 10:  # Profile first 10 batches
+            self.profiler.step()
+            if batch_idx == 9:  # Print profile after 10 batches
+                print("\nPROFILER RESULTS\n")
+                print(self.profiler.key_averages().table(
+                    sort_by="cuda_time_total", row_limit=20))
+                self.profiler.stop()
+        
+        # Log timing metrics
+        batch_time = time.time() - self.batch_start_time
+        trainer.logger.log_metrics({
+            'batch_time': batch_time,
+        }, step=trainer.global_step)
 
 
 @click.command()
@@ -62,13 +96,18 @@ def main(
         config,
         batch_size=batch_size_per_process,
         num_workers=num_workers,
+        prefetch_factor=2,
+        pin_memory=True,
         **config.data,
     )
 
     # Model
     model = ChemProjectorWrapper(config)
 
-    # Train
+    # Add profiling callback
+    profiling_callback = ProfilingCallback()
+    
+    # Train with profiling
     trainer = pl.Trainer(
         accelerator="gpu",
         devices=devices,
@@ -81,14 +120,25 @@ def main(
         callbacks=[
             callbacks.ModelCheckpoint(save_last=True, monitor="val/loss", mode="min", save_top_k=5),
             callbacks.LearningRateMonitor(logging_interval="step"),
+            profiling_callback,  # Add profiling callback
         ],
         logger=[
             loggers.TensorBoardLogger(log_dir, name=exp_name, version=exp_ver),
         ],
         val_check_interval=config.train.val_freq,
         limit_val_batches=4,
+        enable_progress_bar=True,  # Enable to see real-time progress
     )
+
+    # Add memory profiling before fit
+    print("\nInitial CUDA memory usage:")
+    print(torch.cuda.memory_summary())
+    
     trainer.fit(model, datamodule=datamodule, ckpt_path=resume)
+    
+    # Print final profiling info
+    print("\nFinal CUDA memory usage:")
+    print(torch.cuda.memory_summary())
 
 
 if __name__ == "__main__":

@@ -10,11 +10,13 @@ import numpy as np
 import pandas as pd
 import torch
 from rdkit import Chem
-from rdkit.Chem import AllChem, DataStructs, Draw
+from rdkit.Chem import AllChem, DataStructs, Draw, ChemicalFeatures
 from rdkit.Chem.Pharm2D import Generate as Generate2D
 from rdkit.Chem.Pharm2D import Gobbi_Pharm2D
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem.Pharm3D import Pharmacophore
 from tqdm.auto import tqdm
+from skimage.util import view_as_blocks
 
 from .base import Drawable
 from .featurize import atom_features_simple, bond_features_simple, tokenize_smiles
@@ -123,13 +125,32 @@ class FingerprintOption:
 
 
 class Molecule(Drawable):
-    def __init__(self, smiles: str) -> None:
-        super().__init__()
-        self._smiles = smiles.strip()
-
+    def __init__(self, rdmol):
+        """Initialize Molecule with an RDKit molecule object"""
+        if rdmol is None:
+            raise ValueError("Input RDKit molecule is None")
+            
+        self._rdmol = rdmol
+        
+        # Convert RDKit mol to SMILES
+        try:
+            self._smiles = Chem.MolToSmiles(rdmol)
+        except Exception as e:
+            print(f"Warning: Could not convert molecule to SMILES: {e}")
+            self._smiles = ""
+        
+        # Initialize feature factory with correct path
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        self.fdef_file = os.path.join(current_dir, 'BaseFeatures.fdef')
+        
+        if not os.path.exists(self.fdef_file):
+            raise FileNotFoundError(f"BaseFeatures.fdef not found at {self.fdef_file}")
+            
+        self.feature_factory = ChemicalFeatures.BuildFeatureFactory(self.fdef_file)
+    
     @classmethod
     def from_rdmol(cls, rdmol: Chem.Mol) -> "Molecule":
-        return cls(Chem.MolToSmiles(rdmol))
+        return cls(rdmol)
 
     def __getstate__(self):
         return self._smiles
@@ -352,6 +373,103 @@ class Molecule(Drawable):
         # Copy the conformer to our molecule
         conformer = rdmol_with_conformer.GetConformer()
         self._rdmol.AddConformer(conformer)
+
+    def get_pharmacophore_features(self) -> dict:
+        """Get pharmacophore features for the molecule"""
+        # Make sure molecule has 3D coordinates
+        if not self._rdmol.GetNumConformers():
+            raise ValueError("Molecule must have 3D coordinates")
+            
+        # Get all features
+        features = self.feature_factory.GetFeaturesForMol(self._rdmol)
+        
+        # Organize features by type
+        ph4_features = {
+            'HBD': [],  # Hydrogen Bond Donor
+            'HBA': [],  # Hydrogen Bond Acceptor
+            'ARO': [],  # Aromatic
+            'HYD': [],  # Hydrophobic
+            'POS': [],  # Positive Ionizable
+            'NEG': [],  # Negative Ionizable
+        }
+        
+        # Get conformer once
+        conf = self._rdmol.GetConformer()
+        
+        for feature in features:
+            # Get feature position (centroid of atoms in feature)
+            atoms = feature.GetAtomIds()
+            positions = []
+            
+            # Get positions for each atom in the feature
+            for atom_idx in atoms:
+                pos = conf.GetAtomPosition(atom_idx)
+                positions.append([pos.x, pos.y, pos.z])
+            
+            # Calculate centroid
+            centroid = np.mean(positions, axis=0)
+            
+            # Store feature type and position
+            feature_type = feature.GetFamily()
+            if feature_type in ph4_features:
+                ph4_features[feature_type].append({
+                    'position': centroid,
+                    'atoms': atoms,
+                    'type': feature_type
+                })
+        
+        return ph4_features
+
+    def get_pharmacophore_grid(self, grid_resolution=0.5, box_size=15) -> np.ndarray:
+        """Convert pharmacophore features to a grid representation"""
+        features = self.get_pharmacophore_features()
+        
+        # Create empty grids for each feature type
+        grid_size = int(2 * box_size / grid_resolution) + 1
+        feature_grids = {
+            ftype: np.zeros((grid_size, grid_size, grid_size))
+            for ftype in features.keys()
+        }
+        
+        # Center of the grid
+        center = np.array([box_size, box_size, box_size])
+        
+        # Fill grids with gaussian representations of features
+        sigma = grid_resolution  # Width of gaussian
+        for ftype, feature_list in features.items():
+            for feature in feature_list:
+                pos = feature['position']
+                # Convert position to grid coordinates
+                grid_pos = (pos + center) / grid_resolution
+                grid_pos = grid_pos.astype(int)
+                
+                # Add gaussian around feature position
+                x = np.arange(grid_size)
+                y = np.arange(grid_size)
+                z = np.arange(grid_size)
+                X, Y, Z = np.meshgrid(x, y, z)
+                
+                # Gaussian function
+                gaussian = np.exp(-((X - grid_pos[0])**2 + 
+                                  (Y - grid_pos[1])**2 + 
+                                  (Z - grid_pos[2])**2) / (2 * sigma**2))
+                
+                feature_grids[ftype] += gaussian
+        
+        # Combine all feature grids into single array
+        combined_grid = np.stack([feature_grids[ftype] for ftype in sorted(features.keys())], axis=-1)
+        
+        return combined_grid
+
+    def get_pharmacophore_patches(self, patch_size=3) -> np.ndarray:
+        """Convert pharmacophore grid to patches"""
+        ph4_grid = self.get_pharmacophore_grid()
+        
+        # Convert to patches
+        patches = view_as_blocks(ph4_grid, (patch_size, patch_size, patch_size, 6))
+        patches = patches.reshape(-1, patch_size**3 * 6)  # 6 feature types
+        
+        return patches
 
 
 def read_mol_file(

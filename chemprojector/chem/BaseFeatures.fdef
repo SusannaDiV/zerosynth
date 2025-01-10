@@ -1,0 +1,29 @@
+# Hydrogen Bond Donors
+AtomType HBD [N,O;H1]
+
+# Hydrogen Bond Acceptors
+AtomType HBA [N,O;H0]
+
+# Aromatic
+DefineFeature ARO6 c1ccccc1
+  Family ARO
+  Weights 1,1,1,1,1,1
+EndFeature
+
+# Hydrophobic
+DefineFeature HYD [C;D3,D4]
+  Family HYD
+  Weights 1
+EndFeature
+
+# Positive Ionizable
+DefineFeature POSCHRG [+]
+  Family POS
+  Weights 1
+EndFeature
+
+# Negative Ionizable
+DefineFeature NEGCHRG [-]
+  Family NEG
+  Weights 1
+EndFeature
