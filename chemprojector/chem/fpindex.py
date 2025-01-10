@@ -107,6 +107,7 @@ class FingerprintIndex:
     def process_single_rotation(self, mol, rotation_mat, atom_stamp, cavity, resolution=0.5, box_size=15):
         """Process a single rotation of a molecule with pre-computed conformers"""
         try:
+            # Check inputs
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             
             # Check inputs
@@ -131,22 +132,32 @@ class FingerprintIndex:
             rotation[:3, :3] = rotation_mat
             rotation_tensor = torch.tensor(rotation[:3, :3], device=device, dtype=torch.float32)
             
-            # Rotate pharmacophore coordinates
+            # Get pharmacophore features and rotate
+            ph4_coords, ph4_types = mol.get_pharmacophore_features(device=device)
             if len(ph4_coords) > 0:
                 ph4_coords = torch.matmul(ph4_coords, rotation_tensor.T)
             
-            # Create a grid for pharmacophore features (same dimensions as shape grid)
-            grid_size = int(2 * box_size / resolution) + 1  # Same as shape grid
+            # Transform to grid space with more precise binning
+            grid_size = int(2 * box_size / resolution) + 1
+            
+            # Round coordinates to a fixed precision before binning
+            grid_coords = (ph4_coords + box_size) / resolution
+            grid_coords = torch.round(grid_coords * 1000) / 1000  # Round to 3 decimal places
+            bin_indices = grid_coords.floor().long()  # Consistent floor operation
+            
+            # Create grid and assign features
             ph4_grid = torch.zeros((grid_size, grid_size, grid_size, 6), device=device)
             
-            # Transform rotated feature coordinates to grid space
-            grid_coords = (ph4_coords + box_size) / resolution
-            grid_coords = grid_coords.long()  # Convert to grid indices
-            
-            # Assign features to grid points
+            print("\nDEBUG Binning:")
             for feat_idx in range(len(ph4_coords)):
-                x, y, z = grid_coords[feat_idx]
+                x, y, z = bin_indices[feat_idx]
                 feat_type = ph4_types[feat_idx]
+                
+                print(f"Feature {feat_idx}:")
+                print(f"  Original coords: {ph4_coords[feat_idx]}")
+                print(f"  Grid coords (rounded): {grid_coords[feat_idx]}")
+                print(f"  Bin indices: {bin_indices[feat_idx]}")
+                
                 if (0 <= x < grid_size) and (0 <= y < grid_size) and (0 <= z < grid_size):
                     ph4_grid[x, y, z, feat_type] += 1
             
@@ -155,6 +166,7 @@ class FingerprintIndex:
             cavity_conformer = copied_cavity.GetConformer()
             rdMolTransforms.TransformConformer(cavity_conformer, rotation)
             
+            # Get shape
             print("Computing cavity shape...", flush=True)
             curr_cavity_shape = get_shape(
                 copied_cavity, atom_stamp, resolution, box_size
@@ -165,11 +177,10 @@ class FingerprintIndex:
             
             del copied_cavity
             
-            # Center and extract both shape and ph4 grids
+            # Center and extract shape
             grid_size = 21
             start_idx = curr_cavity_shape.shape[0]//2 - grid_size//2
             end_idx = start_idx + grid_size
-            
             centered_shape = curr_cavity_shape[
                 start_idx:end_idx,
                 start_idx:end_idx,
@@ -257,7 +268,6 @@ class FingerprintIndex:
                 
                 print(f"Processing {len(ROTATIONS)} rotations...", flush=True)
                 
-                # Process rotations
                 rotation_results = []
                 assigned_patches_counts = []
                 
@@ -265,7 +275,6 @@ class FingerprintIndex:
                     print(f"\nRotation {i+1}/{len(ROTATIONS)}", flush=True)
                     result = self.process_single_rotation(mol, rot_mat, atom_stamp, cavity)
                     if result is not None:
-                        # Extract number of patches with assigned features
                         assigned_patches = (result['ph4_patches'].sum(dim=1) > 0).sum().item()
                         assigned_patches_counts.append(assigned_patches)
                         rotation_results.append(result)
@@ -273,22 +282,34 @@ class FingerprintIndex:
                     else:
                         print(f"✗ Rotation {i+1} failed", flush=True)
                 
-                # Check consistency of assigned patches across rotations
-                if len(set(assigned_patches_counts)) > 1:
-                    raise ValueError(
-                        f"Inconsistent number of assigned patches across rotations for {mol.smiles}: "
-                        f"counts = {assigned_patches_counts}"
-                    )
+                error_message = None
+                try:
+                    if len(set(assigned_patches_counts)) > 1:
+                        error_message = (
+                            f"Inconsistent number of assigned patches across rotations for {mol.smiles}: "
+                            f"counts = {assigned_patches_counts}"
+                        )
+                        raise ValueError(error_message)
+                    
+                    if not rotation_results:
+                        error_message = f"All rotations failed for molecule: {mol.smiles}"
+                        raise ValueError(error_message)
+                    
+                except ValueError as e:
+                    print(f"\nFAILED to process molecule {mol.smiles}: {str(e)}", flush=True)
+                    # Generate visualization even for failed cases
+                    visualize_molecule_processing(mol, rotation_results, error_message)
+                    continue
                 
-                # Check results
-                if not rotation_results:
-                    raise ValueError(f"All rotations failed for molecule: {mol.smiles}")
+                # Generate visualization for successful cases
+                visualize_molecule_processing(mol, rotation_results)
                 
                 print(f"\n✓ Successfully processed {len(rotation_results)}/{len(ROTATIONS)} rotations", flush=True)
                 results.extend(rotation_results)
                 
             except Exception as e:
                 print(f"\nFAILED to process molecule {mol.smiles}: {str(e)}", flush=True)
+                visualize_molecule_processing(mol, [], str(e))
                 continue
                 
         return results
@@ -571,6 +592,100 @@ def print_first_molecule_data(fpindex_path: str):
         print("\nNo pharmacophore patches found!")
     
     print("\n" + "="*50)
+
+def visualize_molecule_processing(
+    mol, 
+    rotation_results, 
+    error_message=None, 
+    save_path="shapes"
+):
+    """
+    Generate a visualization of molecule processing results including 3D shapes
+    """
+    import matplotlib.pyplot as plt
+    from rdkit.Chem import Draw
+    from rdkit.Chem import AllChem
+    import pathlib
+    import datetime
+    from mpl_toolkits.mplot3d import Axes3D
+    import numpy as np
+    
+    # Create save directory if it doesn't exist
+    pathlib.Path(save_path).mkdir(parents=True, exist_ok=True)
+    
+    # Create figure
+    fig = plt.figure(figsize=(25, 20))
+    
+    # Add title with SMILES and timestamp
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    title = f"Molecule: {mol.smiles}\n{timestamp}"
+    if error_message:
+        title += f"\nERROR: {error_message}"
+    plt.suptitle(title, fontsize=10, wrap=True)
+    
+    # 1. Original molecule with pharmacophore features
+    ax1 = plt.subplot(4, 1, 1)
+    img = Draw.MolToImage(mol._rdmol)
+    ax1.imshow(img)
+    ax1.set_title("Original Molecule")
+    ax1.axis('off')
+    
+    if rotation_results:
+        n_rotations = len(rotation_results)
+        
+        # 2. 3D shape visualization for each rotation
+        for i, result in enumerate(rotation_results):
+            shape = result['shape']
+            ax = plt.subplot(4, n_rotations, n_rotations + i + 1, projection='3d')
+            
+            # Convert shape tensor to numpy if needed
+            shape_np = shape.cpu().numpy() if isinstance(shape, torch.Tensor) else shape
+            
+            # Create 3D visualization
+            x, y, z = np.where(shape_np > 0.5)  # Threshold for visibility
+            scatter = ax.scatter(x, y, z, c=shape_np[x, y, z], cmap='viridis', alpha=0.6)
+            ax.set_title(f"Rotation {i+1}\n3D Shape")
+            
+            # Set equal aspect ratio
+            ax.set_box_aspect([1, 1, 1])
+            
+            # Remove axis labels
+            ax.set_xticklabels([])
+            ax.set_yticklabels([])
+            ax.set_zticklabels([])
+        
+        # 3. Shape patches for each rotation
+        for i, result in enumerate(rotation_results):
+            shape_patches = result['shape_patches']
+            # Plot first 5 non-empty patches
+            non_empty = (shape_patches.sum(dim=1) > 0)
+            patches_to_show = shape_patches[non_empty][:5]
+            
+            plt.subplot(4, n_rotations, 2*n_rotations + i + 1)
+            plt.imshow(patches_to_show.cpu().numpy())
+            plt.title(f"Rotation {i+1}\nShape Patches")
+            plt.axis('off')
+        
+        # 4. Pharmacophore patches for each rotation
+        for i, result in enumerate(rotation_results):
+            ph4_patches = result['ph4_patches']
+            # Plot first 5 non-empty patches
+            non_empty = (ph4_patches.sum(dim=1) > 0)
+            patches_to_show = ph4_patches[non_empty][:5]
+            
+            plt.subplot(4, n_rotations, 3*n_rotations + i + 1)
+            plt.imshow(patches_to_show.cpu().numpy())
+            plt.title(f"Rotation {i+1}\nPh4 Patches")
+            plt.axis('off')
+    
+    # Adjust layout
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
+    # Save figure
+    filename = f"{mol.smiles[:30]}_{timestamp}.png"
+    filename = "".join(c if c.isalnum() else "_" for c in filename)  # Clean filename
+    plt.savefig(f"{save_path}/{filename}", dpi=300, bbox_inches='tight')
+    plt.close()
 
 if __name__ == "__main__":
     fpindex_path = "data/processed/all/fpindex_pharmaco.pkl"
