@@ -19,7 +19,7 @@ from rdkit.Chem import rdMolTransforms, AllChem
 from skimage.util import view_as_blocks
 
 from .mol import FingerprintOption, Molecule, read_mol_file
-from .tfbio_data import get_atom_stamp, make_grid, get_binary_features, ROTATIONS
+from .tfbio_data import get_atom_stamp, make_grid, get_binary_features, ROTATIONS, get_shape
 
 @dataclasses.dataclass
 class _QueryResult:
@@ -120,7 +120,7 @@ class FingerprintIndex:
             
             # Get shape
             print("Computing cavity shape...", flush=True)
-            curr_cavity_shape = get_shape_with_memory_check(
+            curr_cavity_shape = get_shape(
                 copied_cavity, atom_stamp, resolution, box_size
             )
             if curr_cavity_shape is None:
