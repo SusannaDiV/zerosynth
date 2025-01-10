@@ -306,7 +306,7 @@ class FingerprintIndex:
                     '''
                     if not rotation_results:
                         error_message = f"All rotations failed for molecule: {mol.smiles}"
-                        raise ValueError(error_message)
+                        # raise ValueError(error_message)
                     
                 except ValueError as e:
                     print(f"\nFAILED to process molecule {mol.smiles}: {str(e)}", flush=True)
