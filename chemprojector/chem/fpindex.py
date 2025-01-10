@@ -17,6 +17,7 @@ import multiprocessing as mp
 from rdkit import Chem
 from rdkit.Chem import rdMolTransforms, AllChem
 from skimage.util import view_as_blocks
+import h5py
 
 from .mol import FingerprintOption, Molecule, read_mol_file
 from .tfbio_data import get_atom_stamp, make_grid, get_binary_features, ROTATIONS, get_shape
@@ -71,38 +72,225 @@ class FingerprintIndex:
         self._molecules = tuple(molecules)
         self._fp_option = fp_option
         self._fp = self._init_fingerprint()
-        self._shapes, self._shape_patches, self._ph4_patches = self._init_shapes()
         self._tree = self._init_tree()
-    
-    
-    def get_shape_with_memory_check(cavity, atom_stamp, resolution, box_size):
-        """Wrapper to check memory requirements before shape computation"""
-        # Calculate required memory
-        grid_points = int(2 * box_size / resolution) + 1
-        required_memory = grid_points**3 * 4  # 4 bytes per float32
         
-        # Check available memory (with 20% buffer)
-        available_memory = psutil.virtual_memory().available * 0.8
+        # Store paths instead of actual data
+        self.base_path = "data/processed/all"
+        self.shapes_path = f"{self.base_path}/shapes_patches.h5"
+        self.ph4_path = f"{self.base_path}/ph4_patches.h5"
         
-        if required_memory > available_memory:
-            raise MemoryError(f"Insufficient memory. Need {required_memory/1024:.0f} KiB, "
-                            f"have {available_memory/1024:.0f} KiB available")
-        
-        return get_shape(cavity, atom_stamp, resolution, box_size)
+        # Initialize shapes and patches
+        os.makedirs(self.base_path, exist_ok=True)
+        self._init_shapes()
 
-    def _copy_rdmol_with_conformer(self, rdmol: Chem.Mol) -> Chem.Mol:
-        """Helper function to copy an RDKit molecule with its conformer."""
-        if rdmol.GetNumConformers() == 0:
-            raise ValueError("Input molecule has no conformers")
+    def verify_result_structure(self, result, mol_idx):
+        """Verify that result contains all required data with correct shapes"""
+        required_keys = ['shape', 'shape_patches', 'ph4_patches', 'shape_indices', 'ph4_indices']
         
-        # Create new molecule
-        new_mol = Chem.Mol(rdmol)
+        # Check all required keys exist
+        if not all(key in result for key in required_keys):
+            missing = [key for key in required_keys if key not in result]
+            print(f"Molecule {mol_idx}: Missing required keys: {missing}")
+            return False
         
-        # Copy conformer explicitly
-        conf = rdmol.GetConformer()
-        new_mol.AddConformer(conf)
+        # Verify rotations consistency
+        n_rotations = len(result['shape'])
+        if not all(len(result[key]) == n_rotations for key in ['shape_patches', 'ph4_patches', 'shape_indices', 'ph4_indices']):
+            print(f"Molecule {mol_idx}: Inconsistent number of rotations across arrays")
+            return False
         
-        return new_mol
+        # Verify shapes match for each rotation
+        for rot_idx in range(n_rotations):
+            shape = result['shape'][rot_idx]
+            shape_patches = result['shape_patches'][rot_idx]
+            ph4_patches = result['ph4_patches'][rot_idx]
+            
+            if not isinstance(shape, (torch.Tensor, np.ndarray)):
+                print(f"Molecule {mol_idx}, Rotation {rot_idx}: Shape is not a tensor/array")
+                return False
+            
+            if not isinstance(shape_patches, torch.Tensor) or not isinstance(ph4_patches, torch.Tensor):
+                print(f"Molecule {mol_idx}, Rotation {rot_idx}: Patches are not tensors")
+                return False
+            
+            if shape_patches.shape[0] != ph4_patches.shape[0]:
+                print(f"Molecule {mol_idx}, Rotation {rot_idx}: Mismatched number of patches")
+                return False
+        
+        return True
+
+    def process_molecule_batch(self, mol_batch, atom_stamp, debug=False):
+        """Process a batch of molecules with parallel rotations"""
+        results = []
+        
+        for mol in mol_batch:
+            if mol is None:
+                continue
+            
+            try:
+                # Generate 3D conformer
+                rdmol = Chem.AddHs(mol._rdmol)
+                if rdmol is None:
+                    raise ValueError("Failed to add hydrogens")
+                
+                embed_result = AllChem.EmbedMolecule(rdmol, randomSeed=42)
+                if embed_result == -1:
+                    raise ValueError("Failed to embed 3D coordinates")
+                
+                optimize_result = AllChem.MMFFOptimizeMolecule(rdmol)
+                if optimize_result == -1:
+                    raise ValueError("Failed to optimize 3D structure")
+                
+                rdmol = Chem.RemoveHs(rdmol)
+                mol.store_conformer(rdmol)
+                
+                # Process rotations
+                rotation_results = []
+                shape_indices = []
+                ph4_indices = []
+                
+                for rot_idx, rot_mat in enumerate(ROTATIONS):
+                    try:
+                        result = self.process_single_rotation(mol, rot_mat, atom_stamp)
+                        if result is None:
+                            print(f"Warning: Rotation {rot_idx} failed for molecule")
+                            continue
+                        
+                        # Get non-empty patch indices
+                        shape_patches = result['shape_patches']
+                        ph4_patches = result['ph4_patches']
+                        
+                        shape_mask = (shape_patches.sum(dim=(1,2)) > 0)
+                        ph4_mask = (ph4_patches.sum(dim=(1,2)) > 0)
+                        
+                        # Store indices
+                        result['shape_indices'] = torch.where(shape_mask)[0]
+                        result['ph4_indices'] = torch.where(ph4_mask)[0]
+                        
+                        rotation_results.append(result)
+                        shape_indices.append(result['shape_indices'])
+                        ph4_indices.append(result['ph4_indices'])
+                        
+                    except Exception as e:
+                        print(f"Failed processing rotation {rot_idx}: {str(e)}")
+                        continue
+                
+                if not rotation_results:
+                    print("No successful rotations for molecule")
+                    continue
+                
+                # Combine results
+                combined_result = {
+                    'mol': mol,
+                    'shape': [r['shape'] for r in rotation_results],
+                    'shape_patches': torch.stack([r['shape_patches'] for r in rotation_results]),
+                    'ph4_patches': torch.stack([r['ph4_patches'] for r in rotation_results]),
+                    'shape_indices': shape_indices,
+                    'ph4_indices': ph4_indices
+                }
+                
+                results.append(combined_result)
+                
+            except Exception as e:
+                print(f"Failed to process molecule: {str(e)}")
+                continue
+            
+        return results
+
+    def _init_shapes(self, batch_size: int = 4) -> tuple[dict[int, list[np.ndarray]], dict[int, list[np.ndarray]], dict[int, list[torch.Tensor]]]:
+        """Initialize shape and pharmacophore feature computation"""
+        print("\nInitializing shape computation...")
+        
+        # Define HDF5 paths as class properties
+        self.shapes_path = "shapes.h5"
+        self.ph4_path = "pharmacophores.h5"
+        
+        # Create atom stamp once for all batches
+        atom_stamp = get_atom_stamp(grid_resolution=0.5, max_dist=4.0)
+        
+        # Track successful saves
+        successful_saves = 0
+        
+        with h5py.File(self.shapes_path, 'w') as f_shapes, h5py.File(self.ph4_path, 'w') as f_ph4:
+            # Add metadata
+            f_shapes.attrs['num_molecules'] = len(self._molecules)
+            f_ph4.attrs['num_molecules'] = len(self._molecules)
+            
+            for idx in tqdm(range(0, len(self._molecules), batch_size), desc="Computing shapes"):
+                mol_batch = self._molecules[idx:idx + batch_size]
+                
+                try:
+                    results = self.process_molecule_batch(mol_batch, atom_stamp)
+                    if not results:
+                        continue
+                    
+                    # Store results in HDF5
+                    for result in results:
+                        mol_idx = idx + list(mol_batch).index(result['mol'])
+                        mol_id = str(mol_idx)
+                        
+                        # Verify result structure before saving
+                        if not self.verify_result_structure(result, mol_idx):
+                            print(f"Skipping molecule {mol_idx} due to invalid data structure")
+                            continue
+                        
+                        try:
+                            # Store shape data
+                            if mol_id not in f_shapes:
+                                shape_group = f_shapes.create_group(mol_id)
+                                for rot_idx in range(len(result['shape'])):
+                                    rot_group = shape_group.create_group(f'rotation_{rot_idx}')
+                                    
+                                    # Save shape data with compression
+                                    rot_group.create_dataset('shape', 
+                                                           data=result['shape'][rot_idx].cpu().numpy(),
+                                                           compression='gzip')
+                                    rot_group.create_dataset('patches', 
+                                                           data=result['shape_patches'][rot_idx].cpu().numpy(),
+                                                           compression='gzip')
+                                    rot_group.create_dataset('indices', 
+                                                           data=result['shape_indices'][rot_idx].cpu().numpy(),
+                                                           compression='gzip')
+                            
+                            # Store pharmacophore data
+                            if mol_id not in f_ph4:
+                                ph4_group = f_ph4.create_group(mol_id)
+                                for rot_idx in range(len(result['ph4_patches'])):
+                                    rot_group = ph4_group.create_group(f'rotation_{rot_idx}')
+                                    
+                                    # Save ph4 data with compression
+                                    rot_group.create_dataset('patches', 
+                                                           data=result['ph4_patches'][rot_idx].cpu().numpy(),
+                                                           compression='gzip')
+                                    rot_group.create_dataset('indices', 
+                                                           data=result['ph4_indices'][rot_idx].cpu().numpy(),
+                                                           compression='gzip')
+                                
+                                # Store fingerprint reference
+                                if hasattr(self, '_fp') and mol_idx < len(self._fp):
+                                    ph4_group.create_dataset('fingerprint_idx', data=mol_idx)
+                            
+                            successful_saves += 1
+                            
+                        except Exception as e:
+                            print(f"Failed to save molecule {mol_idx} to HDF5: {str(e)}")
+                            continue
+                        
+                    # Memory management
+                    if idx % 100 == 0:
+                        torch.cuda.empty_cache()
+                        gc.collect()
+                
+                except Exception as e:
+                    print(f"Error processing batch at index {idx}: {str(e)}")
+                    continue
+            
+            print(f"\nProcessing completed!")
+            print(f"Successfully saved {successful_saves} molecules")
+            print(f"Molecules in shapes HDF5: {len(f_shapes.keys())}")
+            print(f"Molecules in ph4 HDF5: {len(f_ph4.keys())}")
+
+        return {}, {}, {}  # Return empty dicts since data is in HDF5
 
     def process_single_rotation(self, mol, rotation_mat, atom_stamp, cavity, resolution=0.5, box_size=15, debug=False):
         """Process a single rotation of a molecule with pre-computed conformers"""
@@ -231,155 +419,19 @@ class FingerprintIndex:
                 print(f"\nFAILED ROTATION for {mol.smiles if mol else 'None'}: {str(e)}", flush=True)
             return None
         
-    def process_molecule_batch(self, mol_batch, atom_stamp, debug=False):
-        """Process a batch of molecules with parallel rotations"""
-        results = []
-        for mol in mol_batch:
-            if mol is None:
-                continue
-                
-            try:
-                if debug:
-                    print(f"\n{'='*50}", flush=True)
-                    print(f"Processing molecule: {mol.smiles}", flush=True)
-                
-                # Generate 3D conformer with explicit checks
-                rdmol = Chem.AddHs(mol._rdmol)
-                if rdmol is None:
-                    raise ValueError(f"Failed to add hydrogens to molecule: {mol.smiles}")
-                    
-                embed_result = AllChem.EmbedMolecule(rdmol, randomSeed=42)
-                if embed_result == -1:  # EmbedMolecule returns -1 on failure
-                    raise ValueError(f"Failed to embed 3D coordinates for molecule: {mol.smiles}")
-                    
-                optimize_result = AllChem.MMFFOptimizeMolecule(rdmol)
-                if optimize_result == -1:  # MMFFOptimizeMolecule returns -1 on failure
-                    raise ValueError(f"Failed to optimize 3D structure for molecule: {mol.smiles}")
-                    
-                rdmol = Chem.RemoveHs(rdmol)
-                if rdmol is None:
-                    raise ValueError(f"Failed to remove hydrogens from molecule: {mol.smiles}")
-                    
-                mol.store_conformer(rdmol)
-                
-                # Verify conformer was stored
-                if not mol.has_conformer:
-                    raise ValueError(f"Failed to store conformer for molecule: {mol.smiles}")
-                    
-                if debug:
-                    print("✓ Generated and stored 3D conformer", flush=True)
-                
-                # Create cavity
-                cavity = Chem.Mol(mol._rdmol)
-                if cavity is None:
-                    raise ValueError(f"Failed to create cavity for molecule: {mol.smiles}")
-                
-                if debug:
-                    print(f"Processing {len(ROTATIONS)} rotations...", flush=True)
-                
-                rotation_results = []
-                assigned_patches_counts = []
-                
-                for i, rot_mat in enumerate(ROTATIONS):
-                    if debug:
-                        print(f"\nRotation {i+1}/{len(ROTATIONS)}", flush=True)
-                    result = self.process_single_rotation(mol, rot_mat, atom_stamp, cavity, debug=debug)
-                    if result is not None:
-                        assigned_patches = (result['ph4_patches'].sum(dim=1) > 0).sum().item()
-                        assigned_patches_counts.append(assigned_patches)
-                        rotation_results.append(result)
-                        if debug:
-                            print(f"✓ Rotation {i+1} successful", flush=True)
-                    else:
-                        if debug:
-                            print(f"✗ Rotation {i+1} failed", flush=True)
-                
-                error_message = None
-                try:
-                    '''
-                    if len(set(assigned_patches_counts)) > 1:
-                        error_message = (
-                            f"Inconsistent number of assigned patches across rotations for {mol.smiles}: "
-                            f"counts = {assigned_patches_counts}"
-                        )
-                        raise ValueError(error_message)
-                    '''
-                    if not rotation_results:
-                        error_message = f"All rotations failed for molecule: {mol.smiles}"
-                        raise ValueError(error_message)
-                    
-                except ValueError as e:
-                    print(f"\nFAILED to process molecule {mol.smiles}: {str(e)}", flush=True)
-                    # Generate visualization even for failed cases
-                    # visualize_molecule_processing(mol, rotation_results, error_message)
-                    continue
-                
-                # Generate visualization for successful cases
-                # Add --visualize flag to visualize
-                # visualize_molecule_processing(mol, rotation_results)
-                
-                if debug:
-                    print(f"\n✓ Successfully processed {len(rotation_results)}/{len(ROTATIONS)} rotations", flush=True)
-                results.extend(rotation_results)
-                
-            except Exception as e:
-                if debug:
-                    print(f"\nFAILED to process molecule {mol.smiles}: {str(e)}", flush=True)
-                # visualize_molecule_processing(mol, [], str(e))
-                continue
-                
-        return results
-
-    def _init_shapes(self, batch_size: int = 4) -> tuple[dict[int, list[np.ndarray]], dict[int, list[np.ndarray]], dict[int, list[torch.Tensor]]]:
-        shapes_dict = {}
-        patches_dict = {}
-        ph4_patches_dict = {}
-        current_batch = []
+    def _copy_rdmol_with_conformer(self, rdmol: Chem.Mol) -> Chem.Mol:
+        """Helper function to copy an RDKit molecule with its conformer."""
+        if rdmol.GetNumConformers() == 0:
+            raise ValueError("Input molecule has no conformers")
         
-        for idx in tqdm(range(0, len(self._molecules), batch_size), desc="Computing shapes"):
-            mol_batch = self._molecules[idx:idx + batch_size]
-            atom_stamp = get_atom_stamp(grid_resolution=0.5, max_dist=4.0)
-            
-            try:
-                results = self.process_molecule_batch(mol_batch, atom_stamp)
-                if not results:  # If no results were returned
-                    raise ValueError(f"No results returned for batch starting at index {idx}")
-                
-                # Group shapes by molecule index
-                for result in results:
-                    mol_idx = idx + list(mol_batch).index(result['mol'])
-                    if mol_idx not in shapes_dict:
-                        shapes_dict[mol_idx] = []
-                        patches_dict[mol_idx] = []
-                        ph4_patches_dict[mol_idx] = []
-                    shapes_dict[mol_idx].append(result['shape'])
-                    patches_dict[mol_idx].append(result['shape_patches'])
-                    ph4_patches_dict[mol_idx].append(result['ph4_patches'])
-            
-            except Exception as e:
-                print("\n" + "="*50)
-                print(f"CRITICAL ERROR in _init_shapes at batch {idx}")
-                print(f"Error: {str(e)}")
-                print("="*50 + "\n")
-                raise  # Re-raise the exception to stop processing
-            
-            # Memory management
-            if len(current_batch) >= 1000:
-                gc.collect()
-                current_batch = []
+        # Create new molecule
+        new_mol = Chem.Mol(rdmol)
         
-        return shapes_dict, patches_dict, ph4_patches_dict
-
-    @property
-    def shapes(self) -> dict[int, list[np.ndarray]]:
-        return self._shapes
-
-    @property
-    def shape_patches(self) -> dict[int, list[np.ndarray]]:
-        return self._shape_patches
-
-    def get_shapes(self, index: int) -> list[np.ndarray]:
-        return self._shapes.get(index, [])
+        # Copy conformer explicitly
+        conf = rdmol.GetConformer()
+        new_mol.AddConformer(conf)
+        
+        return new_mol
 
     @property
     def molecules(self) -> tuple[Molecule, ...]:
@@ -456,13 +508,6 @@ class FingerprintIndex:
                 )
             results.append(res)
         return results
-
-    @property
-    def ph4_patches(self) -> dict[int, list[torch.Tensor]]:
-        return self._ph4_patches
-
-    def get_ph4_patches(self, index: int) -> list[torch.Tensor]:
-        return self._ph4_patches.get(index, [])
 
     def assign_ph4_to_patches(
         self,
@@ -709,5 +754,5 @@ def visualize_molecule_processing(
     plt.close()
 
 if __name__ == "__main__":
-    fpindex_path = "data/processed/all/fpindex_pharmaco.pkl"
+    fpindex_path = "data/processed/all/shape_pharmaco_separate_20250110_150000.pkl"
     print_first_molecule_data(fpindex_path)
