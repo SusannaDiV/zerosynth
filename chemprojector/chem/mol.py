@@ -19,7 +19,8 @@ from tqdm.auto import tqdm
 from .base import Drawable
 from .featurize import atom_features_simple, bond_features_simple, tokenize_smiles
 from .gaussian_ph4 import GaussianPH4Generator
-from .allinacp4_ph4 import FEATURE_TYPES
+from .allinacp4_ph4 import FEATURE_TYPES, find_matches, aro_patterns as find_ARO, hbd_patterns as find_HBD, hba_patterns as find_HBA, pos_patterns as find_POS, neg_patterns as find_NEG, hyd_patterns as find_HYD
+
 from e3fp.pipeline import fprints_from_mol
 from e3fp.conformer.util import mol_from_sdf
 from e3fp.fingerprint.fprint import Fingerprint, CountFingerprint
@@ -353,6 +354,79 @@ class Molecule(Drawable):
         conformer = rdmol_with_conformer.GetConformer()
         self._rdmol.AddConformer(conformer)
 
+    def get_pharmacophore_features(self, device=None) -> tuple[torch.Tensor, torch.Tensor]:
+        """Get pharmacophore features and their 3D coordinates using SMARTS patterns from allinacp4_ph4"""
+        if not self._rdmol.GetNumConformers():
+            print(" ERROR No conformer found")
+            #return torch.tensor([], device=device), torch.tensor([], device=device)
+            raise ValueError(f"No conformer found for molecule: {self.smiles}")
+
+            
+        feature_patterns = {
+            'ARO': find_ARO,
+            'HBD': find_HBD,
+            'HBA': find_HBA,
+            'POS': find_POS,
+            'NEG': find_NEG,
+            'HYD': find_HYD
+        }
+        
+        coords = []
+        types = []
+        
+        for idx, (feat_type, patterns) in enumerate(feature_patterns.items()):
+            positions = find_matches(self._rdmol, patterns)
+            if positions:
+                coords.extend(positions)
+                types.extend([idx] * len(positions))
+        
+        if not coords:
+            print("No pharmacophore features found")
+            return torch.tensor([], device=device), torch.tensor([], device=device)
+            
+        # Convert to torch tensors
+        coords_tensor = torch.tensor(coords, dtype=torch.float32, device=device)
+        types_tensor = torch.tensor(types, dtype=torch.long, device=device)
+            
+        return coords_tensor, types_tensor
+'''
+    def get_pharmacophore_grid(self, grid_resolution=0.5, box_size=15) -> torch.Tensor:
+        """Convert pharmacophore features to a grid representation"""
+        coords, types = self.get_pharmacophore_features()
+        if len(coords) == 0:
+            return torch.zeros((grid_size, grid_size, grid_size, len(FEATURE_TYPES)))
+        
+        grid_size = int(2 * box_size / grid_resolution) + 1
+        feature_grids = torch.zeros((grid_size, grid_size, grid_size, len(FEATURE_TYPES)), 
+                                  device=coords.device)
+        
+        # Center of the grid
+        center = torch.tensor([box_size, box_size, box_size], device=coords.device)
+        
+        # Fill grids with gaussian representations of features
+        sigma = grid_resolution
+        for i in range(len(coords)):
+            pos = coords[i]
+            feat_type = types[i]
+            
+            # Convert position to grid coordinates
+            grid_pos = ((pos + center) / grid_resolution).long()
+            
+            # Create coordinate grids
+            x = torch.arange(grid_size, device=coords.device)
+            y = torch.arange(grid_size, device=coords.device)
+            z = torch.arange(grid_size, device=coords.device)
+            X, Y, Z = torch.meshgrid(x, y, z, indexing='ij')
+            
+            # Compute gaussian
+            gaussian = torch.exp(-((X - grid_pos[0])**2 + 
+                                 (Y - grid_pos[1])**2 + 
+                                 (Z - grid_pos[2])**2) / (2 * sigma**2))
+            
+            feature_grids[..., feat_type] += gaussian
+        
+        return feature_grids
+'''
 
 def read_mol_file(
     path: os.PathLike,

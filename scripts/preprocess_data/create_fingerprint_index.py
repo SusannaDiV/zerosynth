@@ -20,7 +20,7 @@ _default_sdf_path = pathlib.Path("data/Enamine_Rush-Delivery_Building_Blocks-US_
     type=click.Path(exists=True, path_type=pathlib.Path),
     default=_default_sdf_path,
 )
-@click.option("--out", type=click.Path(path_type=pathlib.Path), default=pathlib.Path("data/processed/all/fpindex_try_guassian.pkl"))
+@click.option("--out", type=click.Path(path_type=pathlib.Path), default=pathlib.Path("data/processed/all/fpindex_pharmaco.pkl"))
 def fpindex(model_config: DictConfig, molecule: pathlib.Path, out: pathlib.Path):
     if out.exists():
         click.confirm(f"{out} already exists. Overwrite?", abort=True)
