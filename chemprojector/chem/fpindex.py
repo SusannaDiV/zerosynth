@@ -107,7 +107,6 @@ class FingerprintIndex:
     def process_single_rotation(self, mol, rotation_mat, atom_stamp, cavity, resolution=0.5, box_size=15):
         """Process a single rotation of a molecule with pre-computed conformers"""
         try:
-            # Check inputs
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             
             # Check inputs
@@ -122,17 +121,40 @@ class FingerprintIndex:
             
             print(f"\nProcessing rotation for {mol.smiles}", flush=True)
             
-            # Copy and rotate cavity using the helper function
-            copied_cavity = self._copy_rdmol_with_conformer(cavity)
-            cavity_conformer = copied_cavity.GetConformer()
-            if cavity_conformer is None:
-                raise ValueError("Failed to get cavity conformer")
+            # Get pharmacophore features BEFORE any rotation
+            print("Computing pharmacophore features...", flush=True)
+            ph4_coords, ph4_types = mol.get_pharmacophore_features(device=device)
+            print(f"✓ Found {len(ph4_coords)} pharmacophore features", flush=True)
             
+            # Create rotation matrices
             rotation = np.zeros((4, 4))
             rotation[:3, :3] = rotation_mat
+            rotation_tensor = torch.tensor(rotation[:3, :3], device=device, dtype=torch.float32)
+            
+            # Rotate pharmacophore coordinates
+            if len(ph4_coords) > 0:
+                ph4_coords = torch.matmul(ph4_coords, rotation_tensor.T)
+            
+            # Create a grid for pharmacophore features (same dimensions as shape grid)
+            grid_size = int(2 * box_size / resolution) + 1  # Same as shape grid
+            ph4_grid = torch.zeros((grid_size, grid_size, grid_size, 6), device=device)
+            
+            # Transform rotated feature coordinates to grid space
+            grid_coords = (ph4_coords + box_size) / resolution
+            grid_coords = grid_coords.long()  # Convert to grid indices
+            
+            # Assign features to grid points
+            for feat_idx in range(len(ph4_coords)):
+                x, y, z = grid_coords[feat_idx]
+                feat_type = ph4_types[feat_idx]
+                if (0 <= x < grid_size) and (0 <= y < grid_size) and (0 <= z < grid_size):
+                    ph4_grid[x, y, z, feat_type] += 1
+            
+            # Now process cavity and get shape
+            copied_cavity = self._copy_rdmol_with_conformer(cavity)
+            cavity_conformer = copied_cavity.GetConformer()
             rdMolTransforms.TransformConformer(cavity_conformer, rotation)
             
-            # Get shape
             print("Computing cavity shape...", flush=True)
             curr_cavity_shape = get_shape(
                 copied_cavity, atom_stamp, resolution, box_size
@@ -143,10 +165,11 @@ class FingerprintIndex:
             
             del copied_cavity
             
-            # Center and extract shape
+            # Center and extract both shape and ph4 grids
             grid_size = 21
             start_idx = curr_cavity_shape.shape[0]//2 - grid_size//2
             end_idx = start_idx + grid_size
+            
             centered_shape = curr_cavity_shape[
                 start_idx:end_idx,
                 start_idx:end_idx,
@@ -154,54 +177,36 @@ class FingerprintIndex:
             ]
             print(f"✓ Centered shape extracted with dimensions {centered_shape.shape}", flush=True)
             
-            # Create shape patches
+            centered_ph4 = ph4_grid[
+                start_idx:end_idx,
+                start_idx:end_idx,
+                start_idx:end_idx
+            ]
+            
+            # Convert to numpy for view_as_blocks
+            centered_shape_np = centered_shape.cpu().numpy() if isinstance(centered_shape, torch.Tensor) else centered_shape
+            centered_ph4_np = centered_ph4.cpu().numpy()
+            
+            # Create patches for both shape and pharmacophore
             shape_patches = view_as_blocks(centered_shape, (3, 3, 3))
             if shape_patches is None or shape_patches.size == 0:
                 raise ValueError("Failed to create shape patches")
             shape_patches = shape_patches.reshape(-1, 27)  # 3^3 = 27
             print(f"✓ Created {len(shape_patches)} shape patches", flush=True)
             
-            # Create rotated molecule for pharmacophore features
-            print("Computing pharmacophore features...", flush=True)
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            rotated_mol = mol.copy_with_conformer()
-            if rotated_mol is None:
-                raise ValueError("Failed to copy molecule for rotation")
+            ph4_patches = view_as_blocks(centered_ph4_np, (3, 3, 3, 6))
+            ph4_patches = ph4_patches.reshape(-1, 27 * 6)  # Flatten the 3x3x3x6 blocks
             
-            rotated_conformer = rotated_mol._rdmol.GetConformer()
-            if rotated_conformer is None:
-                raise ValueError("Failed to get rotated conformer")
+            print(f"✓ Created {len(shape_patches)} shape patches and corresponding ph4 patches")
             
-            rdMolTransforms.TransformConformer(rotated_conformer, rotation)
-            
-            # Get pharmacophore features
-            ph4_coords, ph4_types = rotated_mol.get_pharmacophore_features(device=device)
-            print(f"✓ Found {len(ph4_coords)} pharmacophore features", flush=True)
-            
-            # Create pharmacophore patches
-            patch_size = 3 * resolution
-            patches_per_dim = int(np.cbrt(len(shape_patches)))
-            centers = []
-            for i in range(patches_per_dim):
-                for j in range(patches_per_dim):
-                    for k in range(patches_per_dim):
-                        center = [
-                            (i + 0.5) * patch_size,
-                            (j + 0.5) * patch_size,
-                            (k + 0.5) * patch_size
-                        ]
-                        centers.append(center)
-            
-            patch_centers = torch.tensor(centers, dtype=torch.float32, device=device)
-            ph4_patches = self.assign_ph4_to_patches(
-                ph4_coords, ph4_types, patch_centers, patch_size
-            )
-            print(f"✓ Created pharmacophore patches", flush=True)
+            # Convert back to torch tensors
+            shape_patches = torch.tensor(shape_patches, device=device)
+            ph4_patches = torch.tensor(ph4_patches, device=device)
             
             return {
                 'mol': mol,
                 'shape': centered_shape,
-                'shape_patches': torch.tensor(shape_patches, device=device),
+                'shape_patches': shape_patches,
                 'ph4_patches': ph4_patches
             }
             
@@ -254,14 +259,26 @@ class FingerprintIndex:
                 
                 # Process rotations
                 rotation_results = []
+                assigned_patches_counts = []
+                
                 for i, rot_mat in enumerate(ROTATIONS):
                     print(f"\nRotation {i+1}/{len(ROTATIONS)}", flush=True)
                     result = self.process_single_rotation(mol, rot_mat, atom_stamp, cavity)
                     if result is not None:
+                        # Extract number of patches with assigned features
+                        assigned_patches = (result['ph4_patches'].sum(dim=1) > 0).sum().item()
+                        assigned_patches_counts.append(assigned_patches)
                         rotation_results.append(result)
                         print(f"✓ Rotation {i+1} successful", flush=True)
                     else:
                         print(f"✗ Rotation {i+1} failed", flush=True)
+                
+                # Check consistency of assigned patches across rotations
+                if len(set(assigned_patches_counts)) > 1:
+                    raise ValueError(
+                        f"Inconsistent number of assigned patches across rotations for {mol.smiles}: "
+                        f"counts = {assigned_patches_counts}"
+                    )
                 
                 # Check results
                 if not rotation_results:
@@ -419,19 +436,25 @@ class FingerprintIndex:
         num_ph4_types: int = 6
     ) -> torch.Tensor:
         """
-        Assign pharmacophore features to patches using exact boundary checks
-        Returns: [num_patches, num_ph4_types] tensor with feature counts per patch
+        Assign pharmacophore features to patches, ensuring each feature is assigned
+        to at least one patch (the closest one if on boundaries)
         """
         if len(ph4_coords) == 0:
             print("WARNING: No pharmacophore features to assign to patches")
             return torch.zeros((len(patch_centers), num_ph4_types), 
                              device=patch_centers.device)
         
-        print(f"\nAssigning {len(ph4_coords)} features to {len(patch_centers)} patches")
+        print(f"\nDEBUG: Feature coordinate range:")
+        print(f"X: [{ph4_coords[:, 0].min():.2f}, {ph4_coords[:, 0].max():.2f}]")
+        print(f"Y: [{ph4_coords[:, 1].min():.2f}, {ph4_coords[:, 1].max():.2f}]")
+        print(f"Z: [{ph4_coords[:, 2].min():.2f}, {ph4_coords[:, 2].max():.2f}]")
         
-        # Center the coordinates
-        box_size = patch_size * int(np.cbrt(len(patch_centers)))
-        ph4_coords = ph4_coords - (box_size / 2)
+        print(f"\nDEBUG: Patch center range:")
+        print(f"X: [{patch_centers[:, 0].min():.2f}, {patch_centers[:, 0].max():.2f}]")
+        print(f"Y: [{patch_centers[:, 1].min():.2f}, {patch_centers[:, 1].max():.2f}]")
+        print(f"Z: [{patch_centers[:, 2].min():.2f}, {patch_centers[:, 2].max():.2f}]")
+        
+        print(f"\nAssigning {len(ph4_coords)} features to {len(patch_centers)} patches")
         
         num_patches = patch_centers.size(0)
         half_size = patch_size / 2
@@ -442,22 +465,42 @@ class FingerprintIndex:
             device=ph4_coords.device
         )
         
-        # Calculate patch boundaries
-        patch_mins = patch_centers - half_size  # [num_patches, 3]
-        patch_maxs = patch_centers + half_size  # [num_patches, 3]
+        # Track which features have been assigned
+        assigned_features = torch.zeros(len(ph4_coords), dtype=torch.bool, device=ph4_coords.device)
         
-        # Count features per patch
-        assigned = 0
-        for i in range(len(ph4_coords)):
-            coord = ph4_coords[i]
-            feat_type = ph4_types[i]
+        # For each feature
+        for feat_idx in range(len(ph4_coords)):
+            feat_coord = ph4_coords[feat_idx]
+            feat_type = ph4_types[feat_idx]
             
-            # Check which patches this feature falls into
-            in_patch = ((coord >= patch_mins) & (coord < patch_maxs)).all(dim=1)
-            patch_features[in_patch, feat_type] += 1
-            assigned += in_patch.any().item()
+            # Calculate distances to all patch centers
+            distances = torch.norm(patch_centers - feat_coord.unsqueeze(0), dim=1)
+            
+            # Find patches where feature is within bounds
+            in_x = (feat_coord[0] >= patch_centers[:, 0] - half_size) & (feat_coord[0] < patch_centers[:, 0] + half_size)
+            in_y = (feat_coord[1] >= patch_centers[:, 1] - half_size) & (feat_coord[1] < patch_centers[:, 1] + half_size)
+            in_z = (feat_coord[2] >= patch_centers[:, 2] - half_size) & (feat_coord[2] < patch_centers[:, 2] + half_size)
+            in_patch = in_x & in_y & in_z
+            
+            if torch.any(in_patch):
+                # Feature is within at least one patch
+                matching_patches = torch.where(in_patch)[0]
+                patch_features[matching_patches, feat_type] += 1
+                assigned_features[feat_idx] = True
+            else:
+                # Feature is not within any patch - assign to closest patch
+                closest_patch = torch.argmin(distances)
+                patch_features[closest_patch, feat_type] += 1
+                assigned_features[feat_idx] = True
         
-        print(f"Features assigned to {assigned}/{len(ph4_coords)} patches")
+        # Check if all features were assigned
+        unassigned_count = len(ph4_coords) - assigned_features.sum().item()
+        if unassigned_count > 0:
+            raise ValueError(f"{unassigned_count} pharmacophore features were not assigned to any patch")
+        
+        assigned_patches = (patch_features.sum(dim=1) > 0).sum().item()
+        print(f"Features assigned to {assigned_patches}/{num_patches} patches")
+        
         return patch_features
 
 
