@@ -96,7 +96,6 @@ def main(
         config,
         batch_size=batch_size_per_process,
         num_workers=num_workers,
-        pin_memory=True,
         **config.data,
     )
 
