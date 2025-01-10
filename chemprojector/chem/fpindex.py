@@ -107,7 +107,7 @@ class FingerprintIndex:
     def process_single_rotation(self, mol, rotation_mat, atom_stamp, cavity, resolution=0.5, box_size=15):
         """Process a single rotation of a molecule with pre-computed conformers"""
         try:
-            # Initialize device first
+            # Check inputs
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             
             # Check inputs
@@ -125,6 +125,8 @@ class FingerprintIndex:
             # Copy and rotate cavity using the helper function
             copied_cavity = self._copy_rdmol_with_conformer(cavity)
             cavity_conformer = copied_cavity.GetConformer()
+            if cavity_conformer is None:
+                raise ValueError("Failed to get cavity conformer")
             
             rotation = np.zeros((4, 4))
             rotation[:3, :3] = rotation_mat
@@ -427,6 +429,10 @@ class FingerprintIndex:
         
         print(f"\nAssigning {len(ph4_coords)} features to {len(patch_centers)} patches")
         
+        # Center the coordinates
+        box_size = patch_size * int(np.cbrt(len(patch_centers)))
+        ph4_coords = ph4_coords - (box_size / 2)
+        
         num_patches = patch_centers.size(0)
         half_size = patch_size / 2
         
@@ -440,26 +446,18 @@ class FingerprintIndex:
         patch_mins = patch_centers - half_size  # [num_patches, 3]
         patch_maxs = patch_centers + half_size  # [num_patches, 3]
         
-        # For each feature
-        for feat_idx in range(len(ph4_coords)):
-            feat_coord = ph4_coords[feat_idx]  # [3]
-            feat_type = ph4_types[feat_idx]    # scalar
+        # Count features per patch
+        assigned = 0
+        for i in range(len(ph4_coords)):
+            coord = ph4_coords[i]
+            feat_type = ph4_types[i]
             
-            # Check if feature is within patch bounds
-            in_x = (feat_coord[0] >= patch_mins[:, 0]) & (feat_coord[0] < patch_maxs[:, 0])
-            in_y = (feat_coord[1] >= patch_mins[:, 1]) & (feat_coord[1] < patch_maxs[:, 1])
-            in_z = (feat_coord[2] >= patch_mins[:, 2]) & (feat_coord[2] < patch_maxs[:, 2])
-            
-            # Feature must be within bounds in all dimensions
-            in_patch = in_x & in_y & in_z  # [num_patches]
-            
-            # Add feature to relevant patches
+            # Check which patches this feature falls into
+            in_patch = ((coord >= patch_mins) & (coord < patch_maxs)).all(dim=1)
             patch_features[in_patch, feat_type] += 1
+            assigned += in_patch.any().item()
         
-        # Add summary at the end
-        non_empty_patches = (patch_features.sum(dim=1) > 0).sum().item()
-        print(f"Features assigned to {non_empty_patches}/{len(patch_centers)} patches")
-        
+        print(f"Features assigned to {assigned}/{len(ph4_coords)} patches")
         return patch_features
 
 
