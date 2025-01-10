@@ -692,11 +692,21 @@ class FingerprintIndex:
         return shapes_dict, shape_patches_dict, ph4_patches_dict
         
 TODO:
-[] Run original chemprojector + SBDD
-[] Shape encoder Morgan fingeprint generation
-[] Run Shape encoder Morgan on training + SBDD
+[] Dividi shape da ph4 da fingerprint
+[] Shape
+[] Shape + ph4
+[] Shape + ph4 + morgan
+[] Shape + ph4 + acp
+[] Shape + ph4 + morgan + acp
+[] Shape + ph4 + morgan & e3p
+[] Shape + ph4 + morgan & e3p + acp
+
+[x] Run original chemprojector + SBDD
+[x] Run shape encoder Morgan + SBDD
+[] Generate ACP4 fingerprints for each molecule and add to fpindex file and add to encoder
+[x] Generate pharmacophore patches 
+    [] Add them to encoder 
 [] Generate Morgan&E3P fingerprints for each molecule and add to fpindex file 
-[] Generate ACP4 fingerprints for each molecule and add to fpindex file 
 [] Visualize pharmacophore features
 
 [] Shape encoder + pharmacofore features
@@ -708,3 +718,6 @@ TODO:
 [] Shape encoder + pharmacofore features + ACP4 fingerprint + Morgan&E3P fingerprint
     
 [] Run Shape encoder + pharmacofore features + ACP4 fingerprint + Morgan&E3P fingerprint on training + SBDD
+
+[] Synformer implementation for SBDD
+[] Synformer shape encoder
