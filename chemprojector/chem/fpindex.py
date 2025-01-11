@@ -372,14 +372,14 @@ class FingerprintIndex:
 
     @property
     def shapes(self) -> dict[int, list[np.ndarray]]:
-        return self._shapes
+        return self.shapes
 
     @property
     def shape_patches(self) -> dict[int, list[np.ndarray]]:
-        return self._shape_patches
+        return self.shape_patches
 
     def get_shapes(self, index: int) -> list[np.ndarray]:
-        return self._shapes.get(index, [])
+        return self.shapes.get(index, [])
 
     @property
     def molecules(self) -> tuple[Molecule, ...]:
