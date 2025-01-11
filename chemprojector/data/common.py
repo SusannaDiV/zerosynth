@@ -30,6 +30,7 @@ class ProjectionData(TypedDict, total=False):
     # Shape encoder
     shape: torch.Tensor
     shape_patches: torch.Tensor
+    # ph4_patches: torch.Tensor
     # Decoder
     token_types: torch.Tensor
     rxn_indices: torch.Tensor
@@ -60,6 +61,7 @@ class ProjectionBatch(TypedDict, total=False):
     shape: torch.Tensor  # [batch_size, box_size, box_size, box_size]
     shape_patches: torch.Tensor  # [batch_size, num_patches, patch_size**3]
     shape_padding_mask: torch.Tensor  # [batch_size, num_patches]
+    # ph4_patches: torch.Tensor  # [batch_size, num_patches, patch_size**3]
 
 
 def featurize_stack_actions(

@@ -525,19 +525,19 @@ class FingerprintIndex:
 def create_fingerprint_index_cache(
     molecule_path: pathlib.Path,
     cache_path: pathlib.Path,
-    fp_option: FingerprintOption,
-    max_molecules: int = None,
+    fp_option: FingerprintOption#,
+    #max_molecules: int = None,
 ):
     import sys
     from humanize import naturalsize
     from itertools import islice
     
     # Use islice to limit molecule reading
-    print(f"\nReading up to {max_molecules} molecules...")
-    if max_molecules:
-        mols = list(islice(read_mol_file(molecule_path), max_molecules))
-    else:
-        mols = list(read_mol_file(molecule_path))
+    # print(f"\nReading up to {max_molecules} molecules...")
+    # if max_molecules:
+    #     mols = list(islice(read_mol_file(molecule_path), max_molecules))
+    # else:
+    mols = list(read_mol_file(molecule_path))
     
     print(f"Number of molecules read: {len(mols)}")
     
