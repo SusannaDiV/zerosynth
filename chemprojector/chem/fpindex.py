@@ -709,5 +709,5 @@ def visualize_molecule_processing(
     plt.close()
 
 if __name__ == "__main__":
-    fpindex_path = "data/processed/all/fpindex_pharmaco.pkl"
+    fpindex_path = "data/processed/all/fpindex_pharmacomit.pkl"
     print_first_molecule_data(fpindex_path)
