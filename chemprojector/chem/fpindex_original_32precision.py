@@ -72,7 +72,7 @@ class FingerprintIndex:
         self._molecules = tuple(molecules)
         self._fp_option = fp_option
         self._fp = self._init_fingerprint()
-        # self._shapes, self._shape_patches, self._ph4_patches = self._init_shapes()
+        self._shapes, self._shape_patches, self._ph4_patches = self._init_shapes()
         self._tree = self._init_tree()
     
     
@@ -216,8 +216,8 @@ class FingerprintIndex:
                 print(f"✓ Created {len(shape_patches)} shape patches and corresponding ph4 patches")
             
             # Convert back to torch tensors
-            shape_patches = torch.tensor(shape_patches, device=device).to(torch.float16)
-            ph4_patches = torch.tensor(ph4_patches, device=device).to(torch.float16)
+            shape_patches = torch.tensor(shape_patches, device=device)
+            ph4_patches = torch.tensor(ph4_patches, device=device)
             
             return {
                 'mol': mol,
@@ -542,26 +542,22 @@ def create_fingerprint_index_cache(
     print(f"Number of molecules read: {len(mols)}")
     
     # Create index
-    fpindex = FingerprintIndex(mols, fp_option=fp_option)
-    
-    # Generate shapes and verify storage
-    print("\nGenerating shapes and patches...")
-    _, shape_patches, ph4_patches = fpindex._init_shapes()
-    
-    # Explicitly store the patches
-    fpindex._shape_patches = shape_patches
-    fpindex._ph4_patches = ph4_patches
-    
-    # Verify patches were stored
-    print("\nVerifying patches storage:")
-    print(f"Shape patches count: {len(fpindex._shape_patches)}")
-    print(f"Ph4 patches count: {len(fpindex._ph4_patches)}")
+    fpindex = FingerprintIndex(mols, fp_option=fp_option)    
+    # Verify shapes exist before saving
+    print("\nVerifying shapes before saving:")
+    if hasattr(fpindex, '_shape_patches'):
+        print("- _shape_patches exists")
+        print(f"- Number of molecules with _shape_patches: {len(fpindex._shapes)}")
+    else:
+        print("- _shape_patches still missing!")
     
     # Print sizes
+    shapes_size = sum(sys.getsizeof(s) for shapes in fpindex._shapes.values() for s in shapes)
     patches_size = sum(sys.getsizeof(p) for patches in fpindex._shape_patches.values() for p in patches)
     ph4_size = sum(sys.getsizeof(p) for patches in fpindex._ph4_patches.values() for p in patches)
     
     print(f"\nComponent sizes:")
+    print(f"- Shapes: {naturalsize(shapes_size)}")
     print(f"- Shape patches: {naturalsize(patches_size)}")
     print(f"- Ph4 patches: {naturalsize(ph4_size)}")
     
@@ -570,26 +566,19 @@ def create_fingerprint_index_cache(
     with open(cache_path, "wb") as f:
         pickle.dump(fpindex, f)
     
-    # Verify pickle contains patches
+    # Verify pickle contains shapes
     print("\nVerifying saved pickle:")
     with open(cache_path, "rb") as f:
         loaded = pickle.load(f)
-        print(f"Shape patches in pickle: {len(loaded._shape_patches)}")
-        print(f"Ph4 patches in pickle: {len(loaded._ph4_patches)}")
+        if hasattr(loaded, '_shape_patches'):
+            print("- _shape_patches exists in pickle")
+            print(f"- Number of molecules with _shape_patches: {len(loaded._shapes)}")
+        else:
+            print("- _shape_patches missing from pickle!")
     
-    # Additionally save separate patch files
-    shape_patches_path = cache_path.parent / (cache_path.stem + "_shape_patches.pkl")
-    ph4_patches_path = cache_path.parent / (cache_path.stem + "_ph4_patches.pkl")
+    final_size = cache_path.stat().st_size
+    print(f"\nFinal pickle file size: {naturalsize(final_size)}")
     
-    print(f"\nSaving additional patch files:")
-    print(f"Shape patches -> {shape_patches_path}")
-    print(f"Ph4 patches -> {ph4_patches_path}")
-    
-    with open(shape_patches_path, "wb") as f:
-        pickle.dump(fpindex._shape_patches, f)
-    
-    with open(ph4_patches_path, "wb") as f:
-        pickle.dump(fpindex._ph4_patches, f)
     
     return fpindex
 

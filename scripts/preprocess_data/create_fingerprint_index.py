@@ -21,18 +21,23 @@ _default_sdf_path = pathlib.Path("data/Enamine_Rush-Delivery_Building_Blocks-US_
     default=_default_sdf_path,
 )
 @click.option("--out", type=click.Path(path_type=pathlib.Path), default=pathlib.Path("data/processed/all/fpindex_pharmacomit.pkl"))
-def fpindex(model_config: DictConfig, molecule: pathlib.Path, out: pathlib.Path):
+@click.option("--num-molecules", type=int, default=100, help="Number of molecules to process")
+def fpindex(model_config: DictConfig, molecule: pathlib.Path, out: pathlib.Path, num_molecules: int):
     if out.exists():
         click.confirm(f"{out} already exists. Overwrite?", abort=True)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     fp_option = FingerprintOption(**model_config.chem.fp_option)
+    
+    # Add limit to number of molecules
+    print(f"\nProcessing first {num_molecules} molecules...")
     fpindex = create_fingerprint_index_cache(
         molecule_path=molecule,
         cache_path=out,
         fp_option=fp_option,
+        max_molecules=num_molecules  # New parameter
     )
-    print(f"Number of molecules: {len(fpindex.molecules)}")
+    print(f"Number of molecules processed: {len(fpindex.molecules)}")
     print(f"Saved index to {out}")
 
 
