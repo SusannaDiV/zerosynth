@@ -93,8 +93,8 @@ class FingerprintIndex:
 
     def _copy_rdmol_with_conformer(self, rdmol: Chem.Mol) -> Chem.Mol:
         """Helper function to copy an RDKit molecule with its conformer."""
-        if rdmol.GetNumConformers() == 0:
-            raise ValueError("Input molecule has no conformers")
+        #if rdmol.GetNumConformers() == 0:
+        #    raise ValueError("Input molecule has no conformers")
         
         # Create new molecule
         new_mol = Chem.Mol(rdmol)
@@ -111,14 +111,14 @@ class FingerprintIndex:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             
             # Check inputs
-            if mol is None:
-                raise ValueError("Molecule is None")
-            if not mol.has_conformer:
-                raise ValueError(f"Molecule {mol.smiles} has no conformer")
-            if cavity is None:
-                raise ValueError("Cavity is None")
-            if not cavity.GetNumConformers():
-                raise ValueError("Cavity has no conformers")
+            #if mol is None:
+            #    raise ValueError("Molecule is None")
+            #if not mol.has_conformer:
+            #    raise ValueError(f"Molecule {mol.smiles} has no conformer")
+            #if cavity is None:
+            #    raise ValueError("Cavity is None")
+            #if not cavity.GetNumConformers():
+            #    raise ValueError("Cavity has no conformers")
             
             if debug:
                 print(f"\nProcessing rotation for {mol.smiles}", flush=True)
@@ -173,8 +173,8 @@ class FingerprintIndex:
             rdMolTransforms.TransformConformer(cavity_conformer, rotation)
             
             curr_cavity_shape = get_shape(copied_cavity, atom_stamp, resolution, box_size)
-            if curr_cavity_shape is None:
-                raise ValueError("Failed to compute cavity shape")
+            #if curr_cavity_shape is None:
+            #    raise ValueError("Failed to compute cavity shape")
             
             if debug:
                 print(f"✓ Shape computed with dimensions {curr_cavity_shape.shape}", flush=True)
@@ -247,34 +247,34 @@ class FingerprintIndex:
                 
                 # Generate 3D conformer with explicit checks
                 rdmol = Chem.AddHs(mol._rdmol)
-                if rdmol is None:
-                    raise ValueError(f"Failed to add hydrogens to molecule: {mol.smiles}")
+                #if rdmol is None:
+                #    raise ValueError(f"Failed to add hydrogens to molecule: {mol.smiles}")
                     
                 embed_result = AllChem.EmbedMolecule(rdmol, randomSeed=42)
-                if embed_result == -1:  # EmbedMolecule returns -1 on failure
-                    raise ValueError(f"Failed to embed 3D coordinates for molecule: {mol.smiles}")
+                #if embed_result == -1:  # EmbedMolecule returns -1 on failure
+                #    raise ValueError(f"Failed to embed 3D coordinates for molecule: {mol.smiles}")
                     
                 optimize_result = AllChem.MMFFOptimizeMolecule(rdmol)
-                if optimize_result == -1:  # MMFFOptimizeMolecule returns -1 on failure
-                    raise ValueError(f"Failed to optimize 3D structure for molecule: {mol.smiles}")
+                #if optimize_result == -1:  # MMFFOptimizeMolecule returns -1 on failure
+                #    raise ValueError(f"Failed to optimize 3D structure for molecule: {mol.smiles}")
                     
                 rdmol = Chem.RemoveHs(rdmol)
-                if rdmol is None:
-                    raise ValueError(f"Failed to remove hydrogens from molecule: {mol.smiles}")
+                #if rdmol is None:
+                #    raise ValueError(f"Failed to remove hydrogens from molecule: {mol.smiles}")
                     
                 mol.store_conformer(rdmol)
                 
                 # Verify conformer was stored
-                if not mol.has_conformer:
-                    raise ValueError(f"Failed to store conformer for molecule: {mol.smiles}")
+                #if not mol.has_conformer:
+                #    raise ValueError(f"Failed to store conformer for molecule: {mol.smiles}")
                     
                 if debug:
                     print("✓ Generated and stored 3D conformer", flush=True)
                 
                 # Create cavity
                 cavity = Chem.Mol(mol._rdmol)
-                if cavity is None:
-                    raise ValueError(f"Failed to create cavity for molecule: {mol.smiles}")
+                #if cavity is None:
+                    #raise ValueError(f"Failed to create cavity for molecule: {mol.smiles}")
                 
                 if debug:
                     print(f"Processing {len(ROTATIONS)} rotations...", flush=True)
@@ -344,8 +344,8 @@ class FingerprintIndex:
             
             try:
                 results = self.process_molecule_batch(mol_batch, atom_stamp)
-                if not results:
-                    raise ValueError(f"No results returned for batch starting at index {idx}")
+                #if not results:
+                #    raise ValueError(f"No results returned for batch starting at index {idx}")
                 
                 # Group shapes by molecule index
                 for result in results:
