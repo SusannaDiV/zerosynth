@@ -245,18 +245,6 @@ class FingerprintIndex:
                 continue
                 
             try:
-                # Special handling for molecule 1328
-                if mol == self._molecules[1328]:
-                    print(f"\nSkipping problematic molecule 1328 and filling with zeros")
-                    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                    results.append({
-                        'mol': mol,
-                        'shape_patches': torch.zeros((7, 27), device=device).to(torch.float16),
-                        'ph4_patches': torch.zeros((7, 27 * 6), device=device).to(torch.float16)
-                    })
-                    continue
-                    
-                # Normal processing for other molecules
                 if debug:
                     print(f"\n{'='*50}", flush=True)
                     print(f"Processing molecule: {mol.smiles}", flush=True)
