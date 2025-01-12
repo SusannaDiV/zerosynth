@@ -245,6 +245,18 @@ class FingerprintIndex:
                 continue
                 
             try:
+                # Special handling for molecule 1328
+                if mol == self._molecules[1328]:
+                    print(f"\nSkipping problematic molecule 1328 and filling with zeros")
+                    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                    results.append({
+                        'mol': mol,
+                        'shape_patches': torch.zeros((7, 27), device=device).to(torch.float16),
+                        'ph4_patches': torch.zeros((7, 27 * 6), device=device).to(torch.float16)
+                    })
+                    continue
+                    
+                # Normal processing for other molecules
                 if debug:
                     print(f"\n{'='*50}", flush=True)
                     print(f"Processing molecule: {mol.smiles}", flush=True)
@@ -352,41 +364,36 @@ class FingerprintIndex:
             atom_stamp = get_atom_stamp(grid_resolution=0.5, max_dist=4.0)
             
             try:
-                # Skip the problematic molecule (fill with zeros)
-                if idx == 1328:  # The problematic molecule index
-                    print(f"\nSkipping problematic molecule {idx} and filling with zeros")
-                    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                    # Create zero tensors with correct shapes
-                    zero_shape = torch.zeros((7, 27), device=device).to(torch.float16)  # Adjust shape if needed
-                    zero_ph4 = torch.zeros((7, 27 * 6), device=device).to(torch.float16)  # Adjust shape if needed
-                    
-                    patches_dict[idx] = zero_shape
-                    ph4_patches_dict[idx] = zero_ph4
+                results = self.process_molecule_batch(mol_batch, atom_stamp)
+                if not results:
+                    # raise ValueError(f"No results returned for batch starting at index {idx}")
                     continue
-                    
-                mol = self._molecules[idx]
-                atom_stamp = get_atom_stamp(grid_resolution=0.5, max_dist=4.0)
                 
-                results = self.process_single_molecule(mol, atom_stamp)
-                if results:
-                    patches_dict[idx] = results['shape_patches']
-                    ph4_patches_dict[idx] = results['ph4_patches']
-                    
+                # Group shapes by molecule index
+                for result in results:
+                    mol_idx = idx + list(mol_batch).index(result['mol'])
+                    if mol_idx not in patches_dict:
+                        # shapes_dict[mol_idx] = []  # Comment out shape append
+                        patches_dict[mol_idx] = []
+                        ph4_patches_dict[mol_idx] = []
+                    # shapes_dict[mol_idx].append(result['shape'])  # Comment out shape append
+                    patches_dict[mol_idx].append(result['shape_patches'])
+                    ph4_patches_dict[mol_idx].append(result['ph4_patches'])
+            
             except Exception as e:
-                print(f"\nWARNING: Failed to process molecule {idx}: {str(e)}")
-                # Fill with zeros on failure too
-                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                zero_shape = torch.zeros((7, 27), device=device).to(torch.float16)
-                zero_ph4 = torch.zeros((7, 27 * 6), device=device).to(torch.float16)
-                patches_dict[idx] = zero_shape
-                ph4_patches_dict[idx] = zero_ph4
-                continue
-                
+                print("\n" + "="*50)
+                print(f"CRITICAL ERROR in _init_shapes at batch {idx}")
+                print(f"Error: {str(e)}")
+                print("="*50 + "\n")
+                raise
+            
             # Memory management
             if len(current_batch) >= 1000:
                 gc.collect()
                 current_batch = []
         
+        # Return empty dictionary for shapes
+        # otherwise return shapes_dict, patches_dict, ph4_patches_dict
         return {}, patches_dict, ph4_patches_dict
     
     
