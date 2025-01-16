@@ -72,9 +72,19 @@ class FingerprintIndex:
         self._molecules = tuple(molecules)
         self._fp_option = fp_option
         self._fp = self._init_fingerprint()
-        # self._shapes, self._shape_patches, self._ph4_patches = self._init_shapes()
         self._tree = self._init_tree()
+        # Initialize shape and ph4 patches
+        self._shape_patches = {}
+        self._ph4_patches = {}
+        self._initialize_patches()
     
+    def _initialize_patches(self, batch_size: int = 1024) -> None:
+        """Initialize shape and pharmacophore patches for all molecules"""
+        print("\nGenerating shapes and patches...")
+        _, shape_patches, ph4_patches = self._init_shapes(batch_size=batch_size)
+        self._shape_patches = shape_patches
+        self._ph4_patches = ph4_patches
+        print(f"Generated patches for {len(self._shape_patches)} molecules")
     
     def get_shape_with_memory_check(cavity, atom_stamp, resolution, box_size):
         """Wrapper to check memory requirements before shape computation"""
@@ -341,52 +351,103 @@ class FingerprintIndex:
                 
         return results
 
-    def _init_shapes(self, batch_size: int = 4) -> tuple[dict[int, list[np.ndarray]], dict[int, list[np.ndarray]], dict[int, list[torch.Tensor]]]:
-        # shapes_dict = {}  # Comment out shapes dictionary
+    def _init_shapes(self, batch_size: int = 1000) -> tuple[dict[int, list[np.ndarray]], dict[int, list[np.ndarray]], dict[int, list[torch.Tensor]]]:
         patches_dict = {}
         ph4_patches_dict = {}
-        current_batch = []
+        atom_stamp = get_atom_stamp(grid_resolution=0.5, max_dist=4.0)
         
-        for idx in tqdm(range(0, len(self._molecules), batch_size), desc="Computing shapes"):
-            mol_batch = self._molecules[idx:idx + batch_size]
-            atom_stamp = get_atom_stamp(grid_resolution=0.5, max_dist=4.0)
-            
-            try:
-                # Skip the problematic molecule (fill with zeros)
-                if idx == 1328:  # The problematic molecule index
-                    print(f"\nSkipping problematic molecule {idx} and filling with zeros")
-                    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                    # Create zero tensors with correct shapes
-                    zero_shape = torch.zeros((7, 27), device=device).to(torch.float16)  # Adjust shape if needed
-                    zero_ph4 = torch.zeros((7, 27 * 6), device=device).to(torch.float16)  # Adjust shape if needed
-                    
-                    patches_dict[idx] = zero_shape
-                    ph4_patches_dict[idx] = zero_ph4
-                    continue
-                    
-                mol = self._molecules[idx]
-                atom_stamp = get_atom_stamp(grid_resolution=0.5, max_dist=4.0)
+        # Get available GPUs
+        num_gpus = torch.cuda.device_count()
+        current_gpu = 0
+        
+        total_molecules = len(self._molecules)
+        
+        # Process molecules in batches
+        with tqdm(total=total_molecules, desc="Computing shapes") as pbar:
+            for batch_start in range(0, total_molecules, batch_size):
+                batch_end = min(batch_start + batch_size, total_molecules)
+                batch_indices = range(batch_start, batch_end)
                 
-                results = self.process_single_molecule(mol, atom_stamp)
-                if results:
-                    patches_dict[idx] = results['shape_patches']
-                    ph4_patches_dict[idx] = results['ph4_patches']
-                    
-            except Exception as e:
-                print(f"\nWARNING: Failed to process molecule {idx}: {str(e)}")
-                # Fill with zeros on failure too
-                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                zero_shape = torch.zeros((7, 27), device=device).to(torch.float16)
-                zero_ph4 = torch.zeros((7, 27 * 6), device=device).to(torch.float16)
-                patches_dict[idx] = zero_shape
-                ph4_patches_dict[idx] = zero_ph4
-                continue
+                # Switch to next GPU in round-robin fashion
+                device = torch.device(f'cuda:{current_gpu}' if torch.cuda.is_available() else 'cpu')
+                current_gpu = (current_gpu + 1) % num_gpus
                 
-            # Memory management
-            if len(current_batch) >= 1000:
+                for idx in batch_indices:
+                    try:
+                        # Skip the problematic molecule (fill with zeros)
+                        if idx == 1328:
+                            print(f"\nSkipping problematic molecule {idx} and filling with zeros")
+                            zero_shape = torch.zeros((1, 27), device=device).to(torch.float16)
+                            zero_ph4 = torch.zeros((1, 27 * 6), device=device).to(torch.float16)
+                            patches_dict[idx] = zero_shape
+                            ph4_patches_dict[idx] = zero_ph4
+                            pbar.update(1)
+                            continue
+                            
+                        mol = self._molecules[idx]
+                        
+                        # Generate 3D conformer with explicit checks
+                        rdmol = Chem.AddHs(mol._rdmol)
+                        if rdmol is None:
+                            pbar.update(1)
+                            continue
+                            
+                        embed_result = AllChem.EmbedMolecule(rdmol, randomSeed=42)
+                        if embed_result == -1:
+                            pbar.update(1)
+                            continue
+                            
+                        optimize_result = AllChem.MMFFOptimizeMolecule(rdmol)
+                        if optimize_result == -1:
+                            pbar.update(1)
+                            continue
+                            
+                        rdmol = Chem.RemoveHs(rdmol)
+                        if rdmol is None:
+                            pbar.update(1)
+                            continue
+                            
+                        mol.store_conformer(rdmol)
+                        
+                        if not mol.has_conformer:
+                            pbar.update(1)
+                            continue
+                        
+                        # Create cavity
+                        cavity = Chem.Mol(mol._rdmol)
+                        if cavity is None:
+                            pbar.update(1)
+                            continue
+                        
+                        # Process single rotation (only identity rotation now)
+                        result = self.process_single_rotation(mol, ROTATIONS[0], atom_stamp, cavity)
+                        if result is not None:
+                            patches_dict[idx] = result['shape_patches'].to(device)
+                            ph4_patches_dict[idx] = result['ph4_patches'].to(device)
+                        else:
+                            # Fill with zeros on failure
+                            zero_shape = torch.zeros((1, 27), device=device).to(torch.float16)
+                            zero_ph4 = torch.zeros((1, 27 * 6), device=device).to(torch.float16)
+                            patches_dict[idx] = zero_shape
+                            ph4_patches_dict[idx] = zero_ph4
+                        
+                        pbar.update(1)
+                            
+                    except Exception as e:
+                        print(f"\nWARNING: Failed to process molecule {idx}: {str(e)}")
+                        # Fill with zeros on failure
+                        zero_shape = torch.zeros((1, 27), device=device).to(torch.float16)
+                        zero_ph4 = torch.zeros((1, 27 * 6), device=device).to(torch.float16)
+                        patches_dict[idx] = zero_shape
+                        ph4_patches_dict[idx] = zero_ph4
+                        pbar.update(1)
+                        continue
+                
+                # Clear GPU memory after each batch
+                torch.cuda.empty_cache()
                 gc.collect()
-                current_batch = []
         
+        print(f"Generated patches for {len(patches_dict)} molecules")
         return {}, patches_dict, ph4_patches_dict
     
     
@@ -541,186 +602,26 @@ def create_fingerprint_index_cache(
     molecule_path: pathlib.Path,
     cache_path: pathlib.Path,
     fp_option: FingerprintOption,
-    resume: bool = False,
     batch_size: int = 20000
 ):
-    # Create directories for intermediate pickles
-    intermediate_dir = cache_path.parent / "intermediate_pickles"
-    shapes_dir = intermediate_dir / "shapes"
-    ph4_dir = intermediate_dir / "ph4"
-    for dir_path in [intermediate_dir, shapes_dir, ph4_dir]:
-        dir_path.mkdir(exist_ok=True, parents=True)
-    
-    # Read molecules
+    print("\nReading molecules...")
     all_mols = list(read_mol_file(molecule_path))
     total_mols = len(all_mols)
-    print(f"\nTotal molecules to process: {total_mols}")
-    
-    # Find last completed batch if resuming
-    start_batch = 0
-    if resume:
-        existing_batches = list(intermediate_dir.glob("complete_batch_*.pkl"))
-        if existing_batches:
-            start_batch = max(int(p.stem.split('_')[-1]) for p in existing_batches) + 1
-            processed_mols = start_batch * batch_size
-            print(f"\nResuming from batch {start_batch}")
-            print(f"Already processed: {processed_mols} molecules")
-    
-    # Process remaining batches
-    for batch_idx, start_idx in enumerate(range(start_batch * batch_size, total_mols, batch_size), start=start_batch):
-        end_idx = min(start_idx + batch_size, total_mols)
-        mol_batch = all_mols[start_idx:end_idx]
-        
-        print(f"\nProcessing batch {batch_idx} ({start_idx} to {end_idx})...")
-        
-        # Create index for this batch
-        fpindex = FingerprintIndex(mol_batch, fp_option=fp_option)
-        
-        # Generate shapes and patches
-        print("Generating shapes and patches...")
-        _, shape_patches, ph4_patches = fpindex._init_shapes()
-        
-        # Save intermediate pickles separately
-        shapes_path = shapes_dir / f"shapes_batch_{batch_idx:03d}.pkl"
-        ph4_path = ph4_dir / f"ph4_batch_{batch_idx:03d}.pkl"
-        main_path = intermediate_dir / f"main_batch_{batch_idx:03d}.pkl"
-        complete_path = intermediate_dir / f"complete_batch_{batch_idx:03d}.pkl"
-        
-        print(f"\nSaving batch files...")
-        print(f"- Shapes: {shapes_path}")
-        print(f"- Ph4: {ph4_path}")
-        print(f"- Main: {main_path}")
-        print(f"- Complete: {complete_path}")
-        
-        # Save individual components
-        with open(shapes_path, "wb") as f:
-            pickle.dump(shape_patches, f)
-        
-        with open(ph4_path, "wb") as f:
-            pickle.dump(ph4_patches, f)
-            
-        with open(main_path, "wb") as f:
-            pickle.dump({
-                'molecules': mol_batch,
-                'fp': fpindex._fp,
-                'fp_option': fp_option
-            }, f)
-            
-        # Save complete batch
-        with open(complete_path, "wb") as f:
-            pickle.dump({
-                'molecules': mol_batch,
-                'fp': fpindex._fp,
-                'fp_option': fp_option,
-                'shape_patches': shape_patches,
-                'ph4_patches': ph4_patches
-            }, f)
-        
-        # Verify saved files
-        print("\nVerifying saved batch files:")
-        
-        '''       
-        # Verify shapes
-        with open(shapes_path, "rb") as f:
-            loaded_shapes = pickle.load(f)
-            num_shapes = len(loaded_shapes)
-            num_rotations = sum(len(patches) for patches in loaded_shapes.values())
-            print(f"- Shape patches: {num_shapes} molecules, {num_rotations} total rotations")
-            if num_shapes == 0:
-                print("  WARNING: No shape patches saved!")
-        
-        # Verify ph4
-        with open(ph4_path, "rb") as f:
-            loaded_ph4 = pickle.load(f)
-            num_ph4 = len(loaded_ph4)
-            num_rotations = sum(len(patches) for patches in loaded_ph4.values())
-            print(f"- Ph4 patches: {num_ph4} molecules, {num_rotations} total rotations")
-            if num_ph4 == 0:
-                print("  WARNING: No ph4 patches saved!")
-        # Verify main
-        with open(main_path, "rb") as f:
-            loaded_main = pickle.load(f)
-            print(f"- Main file: {len(loaded_main['molecules'])} molecules")
-            print(f"  Fingerprint shape: {loaded_main['fp'].shape}")
-        
-        # Verify complete file
-        with open(complete_path, "rb") as f:
-            loaded_complete = pickle.load(f)
-            print(f"- Complete file:")
-            print(f"  - Molecules: {len(loaded_complete['molecules'])}")
-            print(f"  - Fingerprint shape: {loaded_complete['fp'].shape}")
-            print(f"  - Shape patches: {len(loaded_complete['shape_patches'])} molecules")
-            print(f"  - Ph4 patches: {len(loaded_complete['ph4_patches'])} molecules")
-            
-            # Verify patch counts match
-            if len(loaded_complete['shape_patches']) != len(loaded_shapes):
-                print("  WARNING: Shape patch counts don't match between files!")
-            if len(loaded_complete['ph4_patches']) != len(loaded_ph4):
-                print("  WARNING: Ph4 patch counts don't match between files!")
-        '''
+    print(f"Total molecules to process: {total_mols}")
 
-        # Memory cleanup
-        del fpindex, shape_patches, ph4_patches
-        # del loaded_shapes, loaded_ph4, loaded_main, loaded_complete
-        gc.collect()
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
-        
-        print("\nBatch processing complete!")
-        
-    # Merge all intermediate pickles
-    print("\nMerging intermediate pickles...")
-    all_molecules = []
-    all_shape_patches = {}
-    all_ph4_patches = {}
-    all_fingerprints = []
-    
-    for batch_idx in range(len(list(intermediate_dir.glob("main_batch_*.pkl")))):
-        print(f"\nLoading batch {batch_idx}...")
-        
-        # Load main data
-        with open(intermediate_dir / f"main_batch_{batch_idx:03d}.pkl", "rb") as f:
-            main_data = pickle.load(f)
-            
-        # Load shapes
-        with open(shapes_dir / f"shapes_batch_{batch_idx:03d}.pkl", "rb") as f:
-            shape_patches = pickle.load(f)
-            
-        # Load ph4
-        with open(ph4_dir / f"ph4_batch_{batch_idx:03d}.pkl", "rb") as f:
-            ph4_patches = pickle.load(f)
-            
-        # Update indices
-        offset = len(all_molecules)
-        shape_patches = {k + offset: v for k, v in shape_patches.items()}
-        ph4_patches = {k + offset: v for k, v in ph4_patches.items()}
-        
-        # Extend/update collections
-        all_molecules.extend(main_data['molecules'])
-        all_shape_patches.update(shape_patches)
-        all_ph4_patches.update(ph4_patches)
-        all_fingerprints.append(main_data['fp'])
-    
-    # Verify pickle contains patches
+    print("\nCreating FingerprintIndex (including shape and ph4 patches)...")
+    fpindex = FingerprintIndex(all_mols, fp_option=fp_option)
+
+    print(f"\nSaving complete FingerprintIndex to {cache_path}...")
+    with open(cache_path, "wb") as f:
+        pickle.dump(fpindex, f)
+
     print("\nVerifying saved pickle:")
     with open(cache_path, "rb") as f:
         loaded = pickle.load(f)
         print(f"Shape patches in pickle: {len(loaded._shape_patches)}")
         print(f"Ph4 patches in pickle: {len(loaded._ph4_patches)}")
-    
-    # Additionally save separate patch files
-    shape_patches_path = cache_path.parent / (cache_path.stem + "_shape_patches.pkl")
-    ph4_patches_path = cache_path.parent / (cache_path.stem + "_ph4_patches.pkl")
-    
-    print(f"\nSaving additional patch files:")
-    print(f"Shape patches -> {shape_patches_path}")
-    print(f"Ph4 patches -> {ph4_patches_path}")
-    
-    with open(shape_patches_path, "wb") as f:
-        pickle.dump(fpindex._shape_patches, f)
-    
-    with open(ph4_patches_path, "wb") as f:
-        pickle.dump(fpindex._ph4_patches, f)
-    
+
     return fpindex
 
 def print_first_molecule_data(fpindex_path: str):

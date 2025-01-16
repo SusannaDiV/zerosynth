@@ -378,11 +378,7 @@ def rotation_matrix(axis, theta):
 # Initialize ROTATIONS with np.float64
 ROTATIONS = [rotation_matrix(np.array([1, 1, 1], dtype=np.float64), 0)]
 
-# about each axis - 6 rotations
-for axis, theta in [([1, 0, 0], pi / 2), ([0, 1, 0], pi / 2), ([0, 0, 1], pi / 2)]:
-    axis = np.array(axis, dtype=np.float64)
-    ROTATIONS.append(rotation_matrix(axis, theta))
-    ROTATIONS.append(rotation_matrix(axis, -theta))
+# Remove the extra rotations code and keep only the identity rotation above
 
 
 def rotate(coords, rotation):
