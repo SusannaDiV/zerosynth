@@ -115,19 +115,23 @@ def create_data(
     encoder_type: str = "shape",
     device: torch.device = None,
 ):
+    #Remove it here likley
     try:
         seq_idx = mol_seq.index(product)
         mol_idx = mol_idx_seq[seq_idx]
     except ValueError:
-        print(f"Warning: Product molecule not found in sequence, using last molecule")
+        ##print(f"Warning: Product molecule not found in sequence, using last molecule")
         mol_idx = mol_idx_seq[-1]
 
     # Always keep tensors on CPU in worker processes
     if mol_idx in fpindex._shape_patches:
         shape_patches = fpindex._shape_patches[mol_idx].cpu()
+        print("nonzero common")
+
     else:
-        print(f"No shape patches found for molecule {mol_idx}")
+        ##print(f"No shape patches found for molecule {mol_idx}")
         shape_patches = torch.zeros((343, 27), dtype=torch.float32, device='cpu')
+# remove
 
     stack_feats = featurize_stack_actions(
         mol_idx_seq=mol_idx_seq,

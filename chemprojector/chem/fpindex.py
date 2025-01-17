@@ -186,7 +186,11 @@ class FingerprintIndex:
             cavity_conformer = copied_cavity.GetConformer()
             rdMolTransforms.TransformConformer(cavity_conformer, rotation)
             
-            curr_cavity_shape = get_shape(copied_cavity, atom_stamp, resolution, box_size)
+            curr_cavity_shape = get_shape(
+                cavity,
+                atom_stamp,
+                box_size=15
+            )
             if curr_cavity_shape is None:
                 raise ValueError("Failed to compute cavity shape")
             
@@ -351,7 +355,7 @@ class FingerprintIndex:
                 
         return results
 
-    def _init_shapes(self, batch_size: int = 1000) -> tuple[dict[int, list[np.ndarray]], dict[int, list[np.ndarray]], dict[int, list[torch.Tensor]]]:
+    def _init_shapes(self, batch_size: int = 4) -> tuple[dict[int, list[np.ndarray]], dict[int, list[np.ndarray]], dict[int, list[torch.Tensor]]]:
         patches_dict = {}
         ph4_patches_dict = {}
         atom_stamp = get_atom_stamp(grid_resolution=0.5, max_dist=4.0)
@@ -575,6 +579,77 @@ class FingerprintIndex:
         print(f"Features assigned to {assigned_patches}/{num_patches} patches")
         
         return patch_features
+
+    def compute_shape_patches(self, mol: Molecule) -> torch.Tensor:
+        """Compute shape patches for a new molecule on-the-fly."""
+        try:
+            # Force CPU computations
+            with torch.device('cpu'):
+                # Generate 3D conformer with explicit checks
+                rdmol = Chem.AddHs(mol._rdmol)
+                if rdmol is None:
+                    raise ValueError("Failed to add hydrogens")
+                    
+                embed_result = AllChem.EmbedMolecule(rdmol, randomSeed=42)
+                if embed_result == -1:
+                    raise ValueError("Failed to embed molecule")
+                    
+                optimize_result = AllChem.MMFFOptimizeMolecule(rdmol)
+                if optimize_result == -1:
+                    raise ValueError("Failed to optimize molecule")
+                    
+                rdmol = Chem.RemoveHs(rdmol)
+                if rdmol is None:
+                    raise ValueError("Failed to remove hydrogens")
+                    
+                mol = Molecule(rdmol)  # Create new molecule with conformer
+                
+                # Create cavity and get shape
+                cavity = Chem.Mol(mol._rdmol)
+                if cavity is None:
+                    raise ValueError("Failed to create cavity")
+                    
+                # Use same parameters as in process_single_rotation
+                resolution = 0.5
+                box_size = 15
+                atom_stamp = get_atom_stamp(grid_resolution=resolution, max_dist=4.0)
+                
+                # Use memory-safe shape computation
+                curr_cavity_shape = self.get_shape_with_memory_check(
+                    cavity=cavity,
+                    atom_stamp=atom_stamp,
+                    resolution=resolution,
+                    box_size=box_size
+                )
+                
+                if curr_cavity_shape is None:
+                    raise ValueError("Failed to compute cavity shape")
+                    
+                # Center and extract shape
+                grid_size = 21
+                start_idx = curr_cavity_shape.shape[0]//2 - grid_size//2
+                end_idx = start_idx + grid_size
+                
+                centered_shape = curr_cavity_shape[
+                    start_idx:end_idx,
+                    start_idx:end_idx,
+                    start_idx:end_idx
+                ]
+                
+                # Create patches
+                shape_patches = view_as_blocks(centered_shape, (3, 3, 3))
+                shape_patches = shape_patches.reshape(-1, 27)
+                
+                # Convert to tensor on CPU first
+                shape_patches = torch.from_numpy(shape_patches).to(torch.float32)
+                
+                return shape_patches
+
+        except Exception as e:
+            print(f"WARNING: Failed to compute shape patches: {str(e)}")
+            # Return zero tensor with correct shape
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            return torch.zeros((343, 27), dtype=torch.float32, device=device)
 
 
 def create_fingerprint_index_cache(

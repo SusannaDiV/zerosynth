@@ -145,6 +145,15 @@ class ShapeEncoder(BaseEncoder):
         shape_patches = batch["shape_patches"]
         bz, sl, _ = shape_patches.size()
         
+        # Check if all patches are zero
+        if torch.all(shape_patches == 0):
+            print(f"WARNING: All shape patches are zero! Batch size: {bz}, Sequence length: {sl}")
+        
+        # Check percentage of zero elements
+        #zero_percentage = (shape_patches == 0).float().mean().item() * 100
+        #if zero_percentage > 99:  # If more than 99% are zeros
+        #    print(f"WARNING: {zero_percentage:.2f}% of shape patch elements are zero! Batch size: {bz}, Sequence length: {sl}")
+        
         x = self._patch_ffn(shape_patches)
         
         if sl > self._pos_embed.size(1):

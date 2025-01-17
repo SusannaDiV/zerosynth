@@ -67,7 +67,19 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
         device: torch.device = None,
     ) -> None:
         super().__init__()
-        print(f"Initializing ProjectionDataset with {virtual_length} virtual length...")
+        
+        # Debug fpindex contents
+        print("\nFPIndex Debug:")
+        print(f"Total molecules in fpindex: {len(fpindex._shape_patches)}")
+        if len(fpindex._shape_patches) > 0:
+            first_idx = next(iter(fpindex._shape_patches))
+            first_patches = fpindex._shape_patches[first_idx]
+            print(f"First molecule patches shape: {first_patches.shape}")
+            print(f"First molecule patches non-zeros: {torch.count_nonzero(first_patches).item()}")
+            print(f"Sample of indices: {list(fpindex._shape_patches.keys())[:5]}")
+        else:
+            print("WARNING: No shape patches found in fpindex!")
+        
         self._reaction_matrix = reaction_matrix
         self._max_num_atoms = max_num_atoms
         self._max_smiles_len = max_smiles_len
@@ -117,7 +129,7 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
                 
                 # If still not found, use last non-None molecule index
                 if product_idx is None:
-                    print(f"Warning: Product molecule {product.smiles} not found in sequence, using last molecule")
+                    ##print(f"Warning: Product molecule {product.smiles} not found in sequence, using last molecule")
                     # Find the last non-None molecule index
                     for i in range(len(mol_idx_seq_full) - 1, -1, -1):
                         if mol_idx_seq_full[i] is not None:
@@ -125,7 +137,7 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
                             break
                 
                 mol_idx = mol_idx_seq_full[product_idx] if product_idx is not None else None
-
+                
                 # Create data for the product molecule
                 data = create_data(
                     product=product,
@@ -136,21 +148,23 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
                     fpindex=self._fpindex,
                     encoder_type=self.encoder_type
                 )
-
+                
                 # Override shape patches with correct molecule index
                 if mol_idx is not None and mol_idx in self._fpindex._shape_patches:
                     data['shape_patches'] = self._fpindex._shape_patches[mol_idx].cpu()  # Ensure CPU tensor
-                    print(f"Shape patches found for molecule {mol_idx}")
+                    ##print(f"Shape patches found for molecule {mol_idx}")
+                    ###print("nonZeros projection")
+
                 else:
                     # Only print warning for actual molecules (not reaction tokens)
-                    if mol_idx is not None:
-                        print(f"No shape patches found for molecule {mol_idx}")
+                    ##if mol_idx is not None:
+                        ##print(f"No shape patches found for molecule {mol_idx}")
                     data['shape_patches'] = torch.zeros((343, 27), dtype=torch.float32).cpu()  # (7^3, 3^3)
                 
                 # Extra safety check for shape patches
                 if 'shape_patches' in data and data['shape_patches'].device.type != 'cpu':
                     data['shape_patches'] = data['shape_patches'].cpu()
-                
+                            
                 yield data
 
 class ProjectionDataModule(pl.LightningDataModule):

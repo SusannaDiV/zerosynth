@@ -34,9 +34,16 @@ def collate_padding_masks(masks: Sequence[torch.Tensor], max_size: int) -> torch
     return torch.stack(masks_padded, dim=0)
 
 
-def collate_shape_patches(features: Sequence[torch.Tensor], max_size: int = None) -> torch.Tensor:
-    """Collate shape patches without padding since they're all same size"""
-    return torch.stack(features, dim=0)  # All tensors should already be on the same device
+def collate_shape_patches(features: list[torch.Tensor], max_size: int | None = None) -> torch.Tensor:
+    normalized_features = []
+    for f in features:
+        if f.shape[0] == 1:
+            f = f.repeat(343, 1)
+        elif f.shape[0] != 343:
+            raise ValueError(f"Unexpected shape patch size: {f.shape}. Expected (343, 27) or (1, 27)")
+        normalized_features.append(f)
+    
+    return torch.stack(normalized_features, dim=0)
 
 def apply_collate(
     spec: Mapping[str, Callable[[Sequence[torch.Tensor], int], torch.Tensor]],
