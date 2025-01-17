@@ -62,7 +62,7 @@ def main(
         config,
         batch_size=batch_size_per_process,
         num_workers=num_workers,
-        **config.data,
+        **config.data
     )
 
     # Model

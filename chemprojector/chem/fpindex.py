@@ -356,96 +356,75 @@ class FingerprintIndex:
         ph4_patches_dict = {}
         atom_stamp = get_atom_stamp(grid_resolution=0.5, max_dist=4.0)
         
-        # Get available GPUs
-        num_gpus = torch.cuda.device_count()
-        current_gpu = 0
-        
-        total_molecules = len(self._molecules)
-        
-        # Process molecules in batches
-        with tqdm(total=total_molecules, desc="Computing shapes") as pbar:
-            for batch_start in range(0, total_molecules, batch_size):
-                batch_end = min(batch_start + batch_size, total_molecules)
-                batch_indices = range(batch_start, batch_end)
+        for idx in tqdm(range(len(self._molecules)), desc="Computing shapes"):
+            try:
+                # Skip the problematic molecule (fill with zeros)
+                if idx == 1328:  # The problematic molecule index
+                    print(f"\nSkipping problematic molecule {idx} and filling with zeros")
+                    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                    zero_shape = torch.zeros((1, 27), device=device).to(torch.float16)  # Only 1 rotation now
+                    zero_ph4 = torch.zeros((1, 27 * 6), device=device).to(torch.float16)  # Only 1 rotation now
+                    
+                    patches_dict[idx] = zero_shape
+                    ph4_patches_dict[idx] = zero_ph4
+                    continue
+                    
+                mol = self._molecules[idx]
                 
-                # Switch to next GPU in round-robin fashion
-                device = torch.device(f'cuda:{current_gpu}' if torch.cuda.is_available() else 'cpu')
-                current_gpu = (current_gpu + 1) % num_gpus
+                # Generate 3D conformer with explicit checks
+                rdmol = Chem.AddHs(mol._rdmol)
+                if rdmol is None:
+                    continue
+                    
+                embed_result = AllChem.EmbedMolecule(rdmol, randomSeed=42)
+                if embed_result == -1:
+                    continue
+                    
+                optimize_result = AllChem.MMFFOptimizeMolecule(rdmol)
+                if optimize_result == -1:
+                    continue
+                    
+                rdmol = Chem.RemoveHs(rdmol)
+                if rdmol is None:
+                    continue
+                    
+                mol.store_conformer(rdmol)
                 
-                for idx in batch_indices:
-                    try:
-                        # Skip the problematic molecule (fill with zeros)
-                        if idx == 1328:
-                            print(f"\nSkipping problematic molecule {idx} and filling with zeros")
-                            zero_shape = torch.zeros((1, 27), device=device).to(torch.float16)
-                            zero_ph4 = torch.zeros((1, 27 * 6), device=device).to(torch.float16)
-                            patches_dict[idx] = zero_shape
-                            ph4_patches_dict[idx] = zero_ph4
-                            pbar.update(1)
-                            continue
-                            
-                        mol = self._molecules[idx]
-                        
-                        # Generate 3D conformer with explicit checks
-                        rdmol = Chem.AddHs(mol._rdmol)
-                        if rdmol is None:
-                            pbar.update(1)
-                            continue
-                            
-                        embed_result = AllChem.EmbedMolecule(rdmol, randomSeed=42)
-                        if embed_result == -1:
-                            pbar.update(1)
-                            continue
-                            
-                        optimize_result = AllChem.MMFFOptimizeMolecule(rdmol)
-                        if optimize_result == -1:
-                            pbar.update(1)
-                            continue
-                            
-                        rdmol = Chem.RemoveHs(rdmol)
-                        if rdmol is None:
-                            pbar.update(1)
-                            continue
-                            
-                        mol.store_conformer(rdmol)
-                        
-                        if not mol.has_conformer:
-                            pbar.update(1)
-                            continue
-                        
-                        # Create cavity
-                        cavity = Chem.Mol(mol._rdmol)
-                        if cavity is None:
-                            pbar.update(1)
-                            continue
-                        
-                        # Process single rotation (only identity rotation now)
-                        result = self.process_single_rotation(mol, ROTATIONS[0], atom_stamp, cavity)
-                        if result is not None:
-                            patches_dict[idx] = result['shape_patches'].to(device)
-                            ph4_patches_dict[idx] = result['ph4_patches'].to(device)
-                        else:
-                            # Fill with zeros on failure
-                            zero_shape = torch.zeros((1, 27), device=device).to(torch.float16)
-                            zero_ph4 = torch.zeros((1, 27 * 6), device=device).to(torch.float16)
-                            patches_dict[idx] = zero_shape
-                            ph4_patches_dict[idx] = zero_ph4
-                        
-                        pbar.update(1)
-                            
-                    except Exception as e:
-                        print(f"\nWARNING: Failed to process molecule {idx}: {str(e)}")
-                        # Fill with zeros on failure
-                        zero_shape = torch.zeros((1, 27), device=device).to(torch.float16)
-                        zero_ph4 = torch.zeros((1, 27 * 6), device=device).to(torch.float16)
-                        patches_dict[idx] = zero_shape
-                        ph4_patches_dict[idx] = zero_ph4
-                        pbar.update(1)
-                        continue
+                if not mol.has_conformer:
+                    continue
                 
-                # Clear GPU memory after each batch
-                torch.cuda.empty_cache()
+                # Create cavity
+                cavity = Chem.Mol(mol._rdmol)
+                if cavity is None:
+                    continue
+                
+                # Process single rotation (only identity rotation now)
+                result = self.process_single_rotation(mol, ROTATIONS[0], atom_stamp, cavity)
+                if result is not None:
+                    patches_dict[idx] = result['shape_patches']
+                    ph4_patches_dict[idx] = result['ph4_patches']
+                else:
+                    # Fill with zeros on failure
+                    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                    zero_shape = torch.zeros((1, 27), device=device).to(torch.float16)
+                    zero_ph4 = torch.zeros((1, 27 * 6), device=device).to(torch.float16)
+                    patches_dict[idx] = zero_shape
+                    ph4_patches_dict[idx] = zero_ph4
+                    
+            except Exception as e:
+                print(f"\nWARNING: Failed to process molecule {idx}: {str(e)}")
+                # Fill with zeros on failure
+                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                zero_shape = torch.zeros((1, 27), device=device).to(torch.float16)
+                zero_ph4 = torch.zeros((1, 27 * 6), device=device).to(torch.float16)
+                patches_dict[idx] = zero_shape
+                ph4_patches_dict[idx] = zero_ph4
+                continue
+            
+            # Memory management
+            if idx % 1000 == 0:
                 gc.collect()
+                torch.cuda.empty_cache()
         
         print(f"Generated patches for {len(patches_dict)} molecules")
         return {}, patches_dict, ph4_patches_dict

@@ -218,6 +218,7 @@ class Molecule(Drawable):
 
     @cache
     def _get_fingerprint(self, option: FingerprintOption, as_bitvec: bool):
+
         if option.type == "morgan":
             bit_vec = AllChem.GetMorganFingerprintAsBitVect(self._rdmol, option.morgan_radius, option.morgan_n_bits)
         elif option.type == "rdkit":
@@ -290,6 +291,9 @@ class Molecule(Drawable):
             raise ValueError(f"Unsupported fingerprint type: {option.type}")
 
         if as_bitvec:
+            # Cache the fingerprint for future use
+            self._cached_fp = bit_vec
+            self._cached_fp_option = option
             return bit_vec
         feat = np.zeros((1,), dtype=np.float32)
         DataStructs.ConvertToNumpyArray(bit_vec, feat)
