@@ -356,3 +356,138 @@ def draw_batch(batch: ProjectionBatch):
                 im_list.append(m.draw())
         im_list.append(draw_text("END"))
         yield make_grid(im_list)
+
+import matplotlib.pyplot as plt
+from datetime import datetime
+
+def visualize_shape_generation(smiles: str, save_path: str = "shapes"):
+    """Visualize the shape generation process for a single molecule"""
+    # Initialize if needed
+    global _atom_stamp
+    if _atom_stamp is None:
+        _init_worker()
+    
+    # Create save directory if it doesn't exist
+    os.makedirs(save_path, exist_ok=True)
+    
+    # Generate the shape using the exact same code as _generate_shape_patches
+    with torch.device('cpu'):
+        # Convert SMILES to OpenBabel molecule
+        obmol = pybel.readstring("smi", smiles)
+        
+        # Quick 3D generation with minimal optimization
+        obmol.make3D(forcefield="uff", steps=50)
+        obmol.localopt(forcefield="uff", steps=25)
+        
+        # Create shape directly from OpenBabel data
+        curr_cavity_shape = get_shape_from_obmol(
+            obmol=obmol,
+            atom_stamp=_atom_stamp,
+            grid_resolution=0.5,
+            max_dist=15
+        )
+            
+        # Center and extract shape
+        grid_size = 21
+        start_idx = curr_cavity_shape.shape[0]//2 - grid_size//2
+        end_idx = start_idx + grid_size
+        
+        centered_shape = curr_cavity_shape[
+            start_idx:end_idx,
+            start_idx:end_idx,
+            start_idx:end_idx
+        ]
+        
+        # Create patches
+        shape_patches = view_as_blocks(centered_shape, (3, 3, 3))
+        shape_patches = shape_patches.reshape(-1, 27)
+        
+        # Convert to tensor
+        shape_patches = torch.from_numpy(shape_patches).to(torch.float32)
+        
+        # Create visualization
+        fig = plt.figure(figsize=(20, 5))  # Made wider to accommodate fourth panel
+        plt.suptitle(f"Shape Generation for {smiles[:50]}")
+        
+        # 1. 3D shape visualization
+        ax = plt.subplot(141, projection='3d')
+        x, y, z = np.where(centered_shape > 0.5)
+        scatter = ax.scatter(x, y, z, c=centered_shape[x, y, z], cmap='viridis', alpha=0.6)
+        ax.set_title("3D Shape")
+        ax.set_box_aspect([1, 1, 1])
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+        ax.set_zticklabels([])
+        ax.view_init(elev=20, azim=45)
+        
+        # 2. Shape patches
+        plt.subplot(142)
+        non_empty = (shape_patches.sum(dim=1) > 0)
+        patches_to_show = shape_patches[non_empty][:25]
+        if len(patches_to_show) > 0:
+            plt.imshow(patches_to_show.numpy())
+            plt.title(f"Shape Patches\n({len(non_empty)} total, {non_empty.sum()} non-empty)")
+        else:
+            plt.title("No non-empty patches found")
+        plt.axis('off')
+        
+        # 3. Original atomic positions
+        ax = plt.subplot(143, projection='3d')
+        coords = np.array([atom.coords for atom in obmol.atoms])
+        ax.scatter(coords[:, 0], coords[:, 1], coords[:, 2], c='red', s=100, alpha=0.8)
+        ax.set_title("Atomic Positions")
+        ax.set_box_aspect([1, 1, 1])
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+        ax.set_zticklabels([])
+        ax.view_init(elev=20, azim=45)
+        
+        # 4. NEW: 3D Patches Visualization
+        ax = plt.subplot(144, projection='3d')
+        # Reconstruct the 3D grid from patches
+        grid_patches = view_as_blocks(centered_shape, (3, 3, 3))
+        for i in range(grid_patches.shape[0]):
+            for j in range(grid_patches.shape[1]):
+                for k in range(grid_patches.shape[2]):
+                    patch = grid_patches[i, j, k]
+                    if patch.sum() > 0:  # Only show non-empty patches
+                        # Create patch boundary
+                        x = [i*3, (i+1)*3]
+                        y = [j*3, (j+1)*3]
+                        z = [k*3, (k+1)*3]
+                        
+                        # Plot patch as a wireframe cube
+                        xx, yy = np.meshgrid(x, y)
+                        ax.plot_surface(xx, yy, np.full_like(xx, z[0]), alpha=0.1, color='b')
+                        ax.plot_surface(xx, yy, np.full_like(xx, z[1]), alpha=0.1, color='b')
+                        
+                        yy, zz = np.meshgrid(y, z)
+                        ax.plot_surface(np.full_like(yy, x[0]), yy, zz, alpha=0.1, color='b')
+                        ax.plot_surface(np.full_like(yy, x[1]), yy, zz, alpha=0.1, color='b')
+                        
+                        xx, zz = np.meshgrid(x, z)
+                        ax.plot_surface(xx, np.full_like(xx, y[0]), zz, alpha=0.1, color='b')
+                        ax.plot_surface(xx, np.full_like(xx, y[1]), zz, alpha=0.1, color='b')
+                        
+                        # Add points where patch has values
+                        patch_x, patch_y, patch_z = np.where(patch > 0.5)
+                        ax.scatter(i*3 + patch_x, j*3 + patch_y, k*3 + patch_z, 
+                                 c='red', alpha=0.6, s=50)
+        
+        ax.set_title("3D Patches Structure")
+        ax.set_box_aspect([1, 1, 1])
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+        ax.set_zticklabels([])
+        ax.view_init(elev=20, azim=45)
+        
+        plt.tight_layout()
+        
+        # Save the figure
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{smiles[:30]}_{timestamp}.png"
+        filename = "".join(c if c.isalnum() else "_" for c in filename)
+        plt.savefig(f"{save_path}/{filename}", dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Visualization saved to {save_path}/{filename}")
