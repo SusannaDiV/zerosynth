@@ -422,7 +422,7 @@ def rotate(coords, rotation):
         raise ValueError('Invalid rotation %s!' % rotation)
 
 
-def make_grid(coords, features, grid_resolution=1.0, max_dist=10.0):
+def make_grid_mol(coords, features, grid_resolution=1.0, max_dist=10.0):
     """Convert atom coordinates and features represented as 2D arrays into a
     fixed-sized 3D box.
 

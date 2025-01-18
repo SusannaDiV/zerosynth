@@ -6,6 +6,9 @@ from functools import partial
 import os
 import sys
 from pathlib import Path
+from contextlib import contextmanager
+import warnings
+import io
 
 import torch
 import numpy as np
@@ -32,7 +35,13 @@ from chemprojector.chem.mol import Molecule
 from chemprojector.chem.reaction import Reaction
 from chemprojector.chem.stack import Stack
 from chemprojector.utils.image import draw_text, make_grid
-from chemprojector.chem.tfbio_data import get_atom_stamp, get_shape
+from chemprojector.chem.tfbio_data import (
+    get_atom_stamp, 
+    get_shape, 
+    make_grid_mol,
+    ATOMIC_NUMBER,
+    ATOMIC_NUMBER_REVERSE
+)
 
 # Add shape cache
 _shape_cache = {}
@@ -43,6 +52,51 @@ def _init_worker():
     global _atom_stamp
     resolution = 0.5
     _atom_stamp = get_atom_stamp(grid_resolution=resolution, max_dist=4.0)
+
+def get_shape_from_obmol(obmol, atom_stamp, grid_resolution, max_dist):
+    """Generate shape directly from OpenBabel molecule"""
+    # Get coordinates and atom types directly from OpenBabel
+    coords = np.array([atom.coords for atom in obmol.atoms])
+    atom_types = [atom.atomicnum for atom in obmol.atoms]
+    
+    # Create features array (one-hot encoding of atom types)
+    features = np.array(atom_types)[:, None]  # Convert to column vector
+    
+    # Use make_grid from tfbio_data
+    grid, atomic2grid = make_grid_mol(coords, features, grid_resolution, max_dist)
+    shape = np.zeros(grid[0, :, :, :, 0].shape)
+    
+    for tup in atomic2grid:
+        atomic_number = int(tup[0])
+        if atomic_number not in ATOMIC_NUMBER_REVERSE:
+            continue  # Skip atoms not in our mapping
+        stamp = atom_stamp[ATOMIC_NUMBER_REVERSE[atomic_number]]
+        for grid_ijk in atomic2grid[tup]:
+            i, j, k = grid_ijk
+            
+            x_left = max(0, i - stamp.shape[0] // 2)
+            x_right = min(shape.shape[0] - 1, i + stamp.shape[0] // 2)
+            x_l = i - x_left
+            x_r = x_right - i
+            
+            y_left = max(0, j - stamp.shape[1] // 2)
+            y_right = min(shape.shape[1] - 1, j + stamp.shape[1] // 2)
+            y_l = j - y_left
+            y_r = y_right - j
+            
+            z_left = max(0, k - stamp.shape[2] // 2)
+            z_right = min(shape.shape[2] - 1, k + stamp.shape[2] // 2)
+            z_l = k - z_left
+            z_r = z_right - k
+            
+            mid = stamp.shape[0] // 2
+            shape_part = shape[x_left:x_right + 1, y_left:y_right + 1, z_left:z_right + 1]
+            stamp_part = stamp[mid - x_l:mid + x_r + 1, mid - y_l:mid + y_r + 1, mid - z_l:mid + z_r + 1]
+            
+            shape_part += stamp_part
+    
+    shape[shape > 0] = 1
+    return shape
 
 def _generate_shape_patches(smiles: str) -> torch.Tensor:
     """Worker function to generate shape patches for a single molecule"""
@@ -69,25 +123,12 @@ def _generate_shape_patches(smiles: str) -> torch.Tensor:
                 except:
                     raise ValueError(f"Failed to generate 3D conformer for: {smiles}")
             
-            # Convert to RDKit molecule for shape calculation
-            mol_block = obmol.write("mol")
-            rdmol = Chem.MolFromMolBlock(mol_block)
-            if rdmol is None:
-                raise ValueError("Failed to convert OpenBabel molecule to RDKit molecule")
-            
-            # Create cavity
-            cavity = Chem.Mol(rdmol)
-            if cavity is None:
-                raise ValueError("Failed to create cavity")
-            
-            resolution = 0.5
-            box_size = 15
-            
-            curr_cavity_shape = get_shape(
-                mol=cavity,
+            # Create shape directly from OpenBabel data
+            curr_cavity_shape = get_shape_from_obmol(
+                obmol=obmol,
                 atom_stamp=_atom_stamp,
-                grid_resolution=resolution,
-                max_dist=box_size
+                grid_resolution=0.5,
+                max_dist=15
             )
             
             if curr_cavity_shape is None or curr_cavity_shape.size == 0:

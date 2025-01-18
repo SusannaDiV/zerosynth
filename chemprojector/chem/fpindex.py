@@ -20,7 +20,7 @@ from skimage.util import view_as_blocks
 from humanize import naturalsize
 
 from .mol import FingerprintOption, Molecule, read_mol_file
-from .tfbio_data import get_atom_stamp, make_grid, get_binary_features, ROTATIONS, get_shape
+from .tfbio_data import get_atom_stamp, get_binary_features, ROTATIONS, get_shape
 
 @dataclasses.dataclass
 class _QueryResult:
