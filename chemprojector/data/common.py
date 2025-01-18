@@ -4,12 +4,16 @@ from typing import TypedDict
 
 import torch
 import numpy as np
+from rdkit import Chem
+from rdkit.Chem import AllChem
+from skimage.util import view_as_blocks
 
 from chemprojector.chem.fpindex import FingerprintIndex
 from chemprojector.chem.mol import Molecule
 from chemprojector.chem.reaction import Reaction
 from chemprojector.chem.stack import Stack
 from chemprojector.utils.image import draw_text, make_grid
+from chemprojector.chem.tfbio_data import get_atom_stamp, get_shape
 
 
 class TokenType(enum.IntEnum):
@@ -115,23 +119,104 @@ def create_data(
     encoder_type: str = "shape",
     device: torch.device = None,
 ):
-    #Remove it here likley
-    try:
+    # Try direct index first
+    if product in mol_seq:
         seq_idx = mol_seq.index(product)
+    else:
+        # If direct lookup fails, try SMILES comparison
+        seq_idx = None
+        product_smiles = product.smiles
+        for i, mol in enumerate(mol_seq):
+            if mol.smiles == product_smiles:
+                seq_idx = i
+                break
+    
+    if seq_idx is None:
+        mol_idx = None
+    else:
         mol_idx = mol_idx_seq[seq_idx]
-    except ValueError:
-        ##print(f"Warning: Product molecule not found in sequence, using last molecule")
-        mol_idx = mol_idx_seq[-1]
 
-    # Always keep tensors on CPU in worker processes
-    if mol_idx in fpindex._shape_patches:
+    if mol_idx is None or mol_idx not in fpindex._shape_patches:
+        try:
+            # Inlined compute_shape_patches function
+            with torch.device('cpu'):
+                # Generate 3D conformer with explicit checks
+                rdmol = Chem.AddHs(product._rdmol)
+                if rdmol is None:
+                    raise ValueError("Failed to add hydrogens")
+                
+                embed_result = AllChem.EmbedMolecule(rdmol, randomSeed=42)
+                if embed_result == -1:
+                    raise ValueError("Failed to embed molecule")
+                
+                # Try MMFF optimization first
+                optimize_result = AllChem.MMFFOptimizeMolecule(rdmol)
+                if optimize_result == -1:
+                    # If MMFF fails, try UFF optimization as fallback
+                    optimize_result = AllChem.UFFOptimizeMolecule(rdmol)
+                    if optimize_result == -1:
+                        raise ValueError("Failed to optimize molecule with both MMFF and UFF")
+                
+                rdmol = Chem.RemoveHs(rdmol)
+                if rdmol is None:
+                    raise ValueError("Failed to remove hydrogens")
+                
+                # Create new molecule with conformer properly copied
+                new_rdmol = Chem.Mol(rdmol)
+                conf = rdmol.GetConformer()
+                new_rdmol.AddConformer(conf)
+                
+                # Create cavity from the new molecule with conformer
+                cavity = Chem.Mol(new_rdmol)
+                if cavity is None:
+                    raise ValueError("Failed to create cavity")
+                
+                # Verify cavity has conformer
+                if cavity.GetNumConformers() == 0:
+                    raise ValueError("Cavity has no conformer")
+                
+                # Use same parameters as in process_single_rotation
+                resolution = 0.5
+                box_size = 15
+                atom_stamp = get_atom_stamp(grid_resolution=resolution, max_dist=4.0)
+                
+                # Use memory-safe shape computation
+                curr_cavity_shape = get_shape(
+                    mol=cavity,
+                    atom_stamp=atom_stamp,
+                    grid_resolution=resolution,
+                    max_dist=box_size
+                )
+                
+                if curr_cavity_shape is None:
+                    raise ValueError("Failed to compute cavity shape")
+                
+                # Center and extract shape
+                grid_size = 21
+                start_idx = curr_cavity_shape.shape[0]//2 - grid_size//2
+                end_idx = start_idx + grid_size
+                
+                centered_shape = curr_cavity_shape[
+                    start_idx:end_idx,
+                    start_idx:end_idx,
+                    start_idx:end_idx
+                ]
+                
+                # Create patches
+                shape_patches = view_as_blocks(centered_shape, (3, 3, 3))
+                shape_patches = shape_patches.reshape(-1, 27)
+                
+                # Convert to tensor on CPU first
+                shape_patches = torch.from_numpy(shape_patches).to(torch.float32)
+                print("Computing shape patches for new product")
+
+        except Exception as e:
+            print(f"WARNING: Failed to compute shape patches for new product: {e}")
+            # Return zero tensor on CPU
+            shape_patches = torch.zeros((343, 27), dtype=torch.float32, device='cpu')
+    else:
         shape_patches = fpindex._shape_patches[mol_idx].cpu()
         print("nonzero common")
-
-    else:
-        ##print(f"No shape patches found for molecule {mol_idx}")
-        shape_patches = torch.zeros((343, 27), dtype=torch.float32, device='cpu')
-# remove
 
     stack_feats = featurize_stack_actions(
         mol_idx_seq=mol_idx_seq,

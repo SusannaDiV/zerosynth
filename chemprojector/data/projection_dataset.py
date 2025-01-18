@@ -148,7 +148,7 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
                     fpindex=self._fpindex,
                     encoder_type=self.encoder_type
                 )
-                
+                '''
                 # Override shape patches with correct molecule index
                 if mol_idx is not None and mol_idx in self._fpindex._shape_patches:
                     data['shape_patches'] = self._fpindex._shape_patches[mol_idx].cpu()  # Ensure CPU tensor
@@ -164,7 +164,7 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
                 # Extra safety check for shape patches
                 if 'shape_patches' in data and data['shape_patches'].device.type != 'cpu':
                     data['shape_patches'] = data['shape_patches'].cpu()
-                            
+                '''          
                 yield data
 
 class ProjectionDataModule(pl.LightningDataModule):
