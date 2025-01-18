@@ -111,7 +111,7 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
                 
                 # Get a random product from the top of the stack
                 product = random.choice(list(stack.get_top()))
-                
+                '''
                 # Find the index of the product molecule by matching SMILES
                 # First try exact object identity
                 product_idx = None
@@ -137,7 +137,7 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
                             break
                 
                 mol_idx = mol_idx_seq_full[product_idx] if product_idx is not None else None
-                
+                '''
                 # Create data for the product molecule
                 data = create_data(
                     product=product,

@@ -145,17 +145,41 @@ def create_data(
                 if rdmol is None:
                     raise ValueError("Failed to add hydrogens")
                 
-                embed_result = AllChem.EmbedMolecule(rdmol, randomSeed=42)
-                if embed_result == -1:
-                    raise ValueError("Failed to embed molecule")
+                # Try multiple embedding methods in sequence
+                embed_success = False
                 
-                # Try MMFF optimization first
+                # 1. Try ETKDGv3 with default params
+                embed_params = AllChem.ETKDGv3()
+                embed_params.randomSeed = 42
+                embed_params.maxIterations = 1000
+                embed_result = AllChem.EmbedMolecule(rdmol, embed_params)
+                
+                if embed_result == -1:
+                    # 2. Try with random coords
+                    embed_params.useRandomCoords = True
+                    embed_result = AllChem.EmbedMolecule(rdmol, embed_params)
+                    
+                    if embed_result == -1:
+                        # 3. Try ETDKG with different parameters
+                        embed_params = AllChem.ETKDG()
+                        embed_params.randomSeed = 42
+                        embed_params.useBasicKnowledge = True
+                        embed_params.enforceChirality = False
+                        embed_result = AllChem.EmbedMolecule(rdmol, embed_params)
+                        
+                        if embed_result == -1:
+                            # 4. Try distance geometry with basic parameters
+                            embed_params = AllChem.srETKDGv3()
+                            embed_params.randomSeed = 42
+                            embed_result = AllChem.EmbedMolecule(rdmol, embed_params)
+                            
+                            if embed_result == -1:
+                                raise ValueError("Failed to embed molecule after multiple attempts")
+                
+                # Try MMFF optimization first, fall back to UFF
                 optimize_result = AllChem.MMFFOptimizeMolecule(rdmol)
                 if optimize_result == -1:
-                    # If MMFF fails, try UFF optimization as fallback
                     optimize_result = AllChem.UFFOptimizeMolecule(rdmol)
-                    if optimize_result == -1:
-                        raise ValueError("Failed to optimize molecule with both MMFF and UFF")
                 
                 rdmol = Chem.RemoveHs(rdmol)
                 if rdmol is None:
@@ -208,10 +232,11 @@ def create_data(
                 
                 # Convert to tensor on CPU first
                 shape_patches = torch.from_numpy(shape_patches).to(torch.float32)
-                print("Computing shape patches for new product")
+                #print("Computing shape patches for new product")
 
         except Exception as e:
-            print(f"WARNING: Failed to compute shape patches for new product: {e}")
+            ### Check why error codes 5 and 34 based on fpindex 
+            # print(f"WARNING: Failed to compute shape patches for new product: {e}")
             # Return zero tensor on CPU
             shape_patches = torch.zeros((343, 27), dtype=torch.float32, device='cpu')
     else:
