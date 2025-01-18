@@ -18,7 +18,8 @@ from .collate import (
     collate_2d_tokens,
     collate_padding_masks,
     collate_tokens,
-    collate_shape_patches
+    collate_shape_patches,
+    collate_ph4_patches
 )
 from .common import ProjectionBatch, ProjectionData, create_data
 
@@ -34,6 +35,7 @@ class Collater:
 
         self.spec_shape = {
             "shape_patches": collate_shape_patches,
+            "ph4_patches": collate_ph4_patches,
         }
         self.spec_tokens = {
             "token_types": collate_tokens,
@@ -85,10 +87,6 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
     
 
     def __iter__(self):
-        # Get worker info
-        worker_info = torch.utils.data.get_worker_info()
-        worker_id = worker_info.id if worker_info is not None else None
-        
         while True:
             for stack in create_stack_step_by_step(
                 self._reaction_matrix,
@@ -138,8 +136,7 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
                     rxn_seq=rxn_seq_full,
                     rxn_idx_seq=rxn_idx_seq_full,
                     fpindex=self._fpindex,
-                    encoder_type=self.encoder_type,
-                    worker_id=worker_id
+                    encoder_type=self.encoder_type
                 )
                 '''
                 # Override shape patches with correct molecule index

@@ -47,6 +47,153 @@ from chemprojector.chem.tfbio_data import (
 _shape_cache = {}
 _atom_stamp = None  # Global atom stamp cache
 
+# Pharmacophore SMARTS patterns from Pharmer software
+ARO_SMARTS = ["a1aaaaa1", "a1aaaa1"]
+
+HBD_SMARTS = ["[#7!H0&!$(N-[SX4](=O)(=O)[CX4](F)(F)F)]",
+              "[#8!H0&!$([OH][C,S,P]=O)]",
+              "[#16!H0]"]
+
+HBA_SMARTS = ["[#7&!$([nX3])&!$([NX3]-*=[!#6])&!$([NX3]-[a])&!$([NX4])&!$(N=C([C,N])N)]",
+              "[$([O])&!$([OX2](C)C=O)&!$(*(~a)~a)]"]
+
+POS_SMARTS = ["[+,+2,+3,+4]",
+              "[$(CC)](=N)N",  # amidine
+              "[$(C(N)(N)=N)]",  # guanidine
+              "[$(n1cc[nH]c1)]"]
+
+NEG_SMARTS = ["[-,-2,-3,-4]",
+              "C(=O)[O-,OH,OX1]",
+              "[$([S,P](=O)[O-,OH,OX1])]",
+              "c1[nH1]nnn1",
+              "c1nn[nH1]n1",
+              "C(=O)N[OH1,O-,OX1]",
+              "C(=O)N[OH1,O-]",
+              "CO(=N[OH1,O-])",
+              "[$(N-[SX4](=O)(=O)[CX4](F)(F)F)]"]
+
+HYD_SMARTS = ["a1aaaaa1",
+              "a1aaaa1",
+              "[$([CH3X4,CH2X3,CH1X2,F,Cl,Br,I])&!$(**[CH3X4,CH2X3,CH1X2,F,Cl,Br,I])]",
+              "[$(*([CH3X4,CH2X3,CH1X2,F,Cl,Br,I])[CH3X4,CH2X3,CH1X2,F,Cl,Br,I])&!$(*([CH3X4,CH2X3,CH1X2,F,Cl,Br,I])([CH3X4,CH2X3,CH1X2,F,Cl,Br,I])[CH3X4,CH2X3,CH1X2,F,Cl,Br,I])]([CH3X4,CH2X3,CH1X2,F,Cl,Br,I])[CH3X4,CH2X3,CH1X2,F,Cl,Br,I]",
+              "*([CH3X4,CH2X3,CH1X2,F,Cl,Br,I])([CH3X4,CH2X3,CH1X2,F,Cl,Br,I])[CH3X4,CH2X3,CH1X2,F,Cl,Br,I]",
+              "[C&r3]1~[C&r3]~[C&r3]1",
+              "[C&r4]1~[C&r4]~[C&r4]~[C&r4]1",
+              "[C&r5]1~[C&r5]~[C&r5]~[C&r5]~[C&r5]1",
+              "[C&r6]1~[C&r6]~[C&r6]~[C&r6]~[C&r6]~[C&r6]1",
+              "[C&r7]1~[C&r7]~[C&r7]~[C&r7]~[C&r7]~[C&r7]~[C&r7]1",
+              "[C&r8]1~[C&r8]~[C&r8]~[C&r8]~[C&r8]~[C&r8]~[C&r8]~[C&r8]1",
+              "[CH2X4,CH1X3,CH0X2]~[CH3X4,CH2X3,CH1X2,F,Cl,Br,I]",
+              "[$([CH2X4,CH1X3,CH0X2]~[$([!#1]);!$([CH2X4,CH1X3,CH0X2])])]~[CH2X4,CH1X3,CH0X2]~[CH2X4,CH1X3,CH0X2]",
+              "[$([CH2X4,CH1X3,CH0X2]~[CH2X4,CH1X3,CH0X2]~[$([CH2X4,CH1X3,CH0X2]~[$([!#1]);!$([CH2X4,CH1X3,CH0X2])])])]~[CH2X4,CH1X3,CH0X2]~[CH2X4,CH1X3,CH0X2]~[CH2X4,CH1X3,CH0X2]",
+              "[$([S]~[#6])&!$(S~[!#6])]"]
+
+def find_matches(obmol, smarts_pattern):
+    """Find all matches for a SMARTS pattern in an OpenBabel molecule"""
+    matches = []
+    pattern = ob.OBSmartsPattern()
+    pattern.Init(smarts_pattern)
+    pattern.Match(obmol.OBMol)
+    
+    if pattern.NumMatches() > 0:
+        match_list = pattern.GetMapList()
+        for match in match_list:
+            # Calculate center of matched atoms
+            x_sum = y_sum = z_sum = 0
+            for atom_idx in match:
+                atom = obmol.OBMol.GetAtom(atom_idx)
+                x_sum += atom.GetX()
+                y_sum += atom.GetY()
+                z_sum += atom.GetZ()
+            n_atoms = len(match)
+            center = (x_sum/n_atoms, y_sum/n_atoms, z_sum/n_atoms)
+            matches.append(center)
+    return matches
+
+def find_features(obmol, smarts_list):
+    """Find all pharmacophore features for a list of SMARTS patterns"""
+    all_matches = []
+    for smarts in smarts_list:
+        matches = find_matches(obmol, smarts)
+        all_matches.extend(matches)
+    return all_matches
+
+def cluster_hydrophobic(points, cutoff=2.0):
+    """Cluster hydrophobic points that are within cutoff distance"""
+    if not points:
+        return []
+    
+    n = len(points)
+    clusters = list(range(n))
+    
+    # Cluster points
+    for i in range(n):
+        p1 = points[i]
+        cluster_id = clusters[i]
+        for j in range(i+1, n):
+            p2 = points[j]
+            dx = p1[0] - p2[0]
+            dy = p1[1] - p2[1]
+            dz = p1[2] - p2[2]
+            if (dx*dx + dy*dy + dz*dz) <= cutoff*cutoff:
+                clusters[j] = cluster_id
+    
+    # Average points in each cluster
+    cluster_dict = {}
+    for i, cluster_id in enumerate(clusters):
+        if cluster_id not in cluster_dict:
+            cluster_dict[cluster_id] = []
+        cluster_dict[cluster_id].append(points[i])
+    
+    # Calculate cluster centers
+    centers = []
+    for points in cluster_dict.values():
+        x_sum = y_sum = z_sum = 0
+        for x, y, z in points:
+            x_sum += x
+            y_sum += y
+            z_sum += z
+        n = len(points)
+        centers.append((x_sum/n, y_sum/n, z_sum/n))
+    
+    return centers
+
+def get_pharmacophore_features(obmol):
+    """Get all pharmacophore features for a molecule"""
+    coords = []
+    types = []
+    
+    # Find all feature types
+    aro = find_features(obmol, ARO_SMARTS)
+    hbd = find_features(obmol, HBD_SMARTS)
+    hba = find_features(obmol, HBA_SMARTS)
+    pos = find_features(obmol, POS_SMARTS)
+    neg = find_features(obmol, NEG_SMARTS)
+    hyd = find_features(obmol, HYD_SMARTS)
+    hyd = cluster_hydrophobic(hyd)  # Cluster hydrophobic features
+    
+    # Add features with their types
+    for feat in aro:
+        coords.append(feat)
+        types.append(0)  # Aromatic
+    for feat in hbd:
+        coords.append(feat)
+        types.append(1)  # Donor
+    for feat in hba:
+        coords.append(feat)
+        types.append(2)  # Acceptor
+    for feat in pos:
+        coords.append(feat)
+        types.append(3)  # Positive
+    for feat in neg:
+        coords.append(feat)
+        types.append(4)  # Negative
+    for feat in hyd:
+        coords.append(feat)
+        types.append(5)  # Hydrophobic
+    
+    return torch.tensor(coords, dtype=torch.float32), torch.tensor(types, dtype=torch.long)
+
 def _init_worker():
     """Initialize worker process with global atom stamp"""
     global _atom_stamp
@@ -98,8 +245,8 @@ def get_shape_from_obmol(obmol, atom_stamp, grid_resolution, max_dist):
     shape[shape > 0] = 1
     return shape
 
-def _generate_shape_patches(smiles: str) -> torch.Tensor:
-    """Worker function to generate shape patches for a single molecule"""
+def _generate_shape_patches(smiles: str) -> tuple[torch.Tensor, torch.Tensor]:
+    """Worker function to generate shape and pharmacophore patches for a single molecule"""
     global _atom_stamp
     try:
         if _atom_stamp is None:
@@ -111,30 +258,51 @@ def _generate_shape_patches(smiles: str) -> torch.Tensor:
             obmol = pybel.readstring("smi", smiles)
             if obmol is None:
                 print(f"Failed to parse SMILES: {smiles}")
-                return torch.zeros((343, 27), dtype=torch.float32)
+                return torch.zeros((343, 27), dtype=torch.float32), torch.zeros((343, 27 * 6), dtype=torch.float32)
             
-            # Quick 3D generation with minimal optimization
+            # Generate 3D conformer
             try:
-                obmol.make3D(forcefield="uff", steps=50)  # Reduced steps
-                obmol.localopt(forcefield="uff", steps=25)  # Minimal optimization
+                obmol.make3D(forcefield="uff", steps=50)
+                obmol.localopt(forcefield="uff", steps=25)
             except:
                 try:
-                    obmol.make3D(steps=25)  # Last resort with minimal steps
+                    obmol.make3D(steps=25)
                 except:
                     raise ValueError(f"Failed to generate 3D conformer for: {smiles}")
             
-            # Create shape directly from OpenBabel data
+            # Get pharmacophore features using SMARTS patterns
+            ph4_coords, ph4_types = get_pharmacophore_features(obmol)
+            
+            # Create shape
+            resolution = 0.5
+            box_size = 15
+            grid_size = int(2 * box_size / resolution) + 1
+            
+            # Create pharmacophore grid
+            ph4_grid = torch.zeros((grid_size, grid_size, grid_size, 6), device='cpu')
+            
+            # Transform to grid space with more precise binning
+            if len(ph4_coords) > 0:
+                grid_coords = (ph4_coords + box_size) / resolution
+                grid_coords = torch.round(grid_coords * 1000) / 1000  # Round to 3 decimal places
+                bin_indices = grid_coords.floor().long()  # Consistent floor operation
+                
+                # Bin pharmacophore features
+                for feat_idx in range(len(ph4_coords)):
+                    x, y, z = bin_indices[feat_idx]
+                    feat_type = ph4_types[feat_idx]
+                    if (0 <= x < grid_size) and (0 <= y < grid_size) and (0 <= z < grid_size):
+                        ph4_grid[x, y, z, feat_type] += 1
+            
+            # Create shape
             curr_cavity_shape = get_shape_from_obmol(
                 obmol=obmol,
                 atom_stamp=_atom_stamp,
-                grid_resolution=0.5,
-                max_dist=15
+                grid_resolution=resolution,
+                max_dist=box_size
             )
             
-            if curr_cavity_shape is None or curr_cavity_shape.size == 0:
-                raise ValueError("Failed to compute cavity shape")
-                
-            # Center and extract shape
+            # Center and extract both grids
             grid_size = 21
             start_idx = curr_cavity_shape.shape[0]//2 - grid_size//2
             end_idx = start_idx + grid_size
@@ -145,17 +313,32 @@ def _generate_shape_patches(smiles: str) -> torch.Tensor:
                 start_idx:end_idx
             ]
             
+            centered_ph4 = ph4_grid[
+                start_idx:end_idx,
+                start_idx:end_idx,
+                start_idx:end_idx
+            ]
+            
+            # Convert to numpy for view_as_blocks
+            centered_shape_np = centered_shape.cpu().numpy() if isinstance(centered_shape, torch.Tensor) else centered_shape
+            centered_ph4_np = centered_ph4.cpu().numpy() if isinstance(centered_ph4, torch.Tensor) else centered_ph4
+            
             # Create patches
-            shape_patches = view_as_blocks(centered_shape, (3, 3, 3))
+            shape_patches = view_as_blocks(centered_shape_np, (3, 3, 3))
             shape_patches = shape_patches.reshape(-1, 27)
             
-            # Convert to tensor
-            result = torch.from_numpy(shape_patches).to(torch.float32)
-            return result
+            ph4_patches = view_as_blocks(centered_ph4_np, (3, 3, 3, 6))
+            ph4_patches = ph4_patches.reshape(-1, 27 * 6)
+            
+            # Convert back to tensors
+            shape_patches = torch.from_numpy(shape_patches).float()
+            ph4_patches = torch.from_numpy(ph4_patches).float()
+            
+            return shape_patches, ph4_patches
             
     except Exception as e:
         print(f"Error processing {smiles}: {str(e)}")
-        return torch.zeros((343, 27), dtype=torch.float32)
+        return torch.zeros((343, 27), dtype=torch.float32), torch.zeros((343, 27 * 6), dtype=torch.float32)
 
 # Create a process pool for parallel shape generation
 _process_pool = None
@@ -168,8 +351,8 @@ def init_shape_generation(num_workers: int = None):
             num_workers = max(1, mp.cpu_count() - 1)
         _process_pool = mp.Pool(num_workers, initializer=_init_worker)
 
-def generate_shapes_parallel(smiles_list: list[str]) -> list[torch.Tensor]:
-    """Generate shapes for multiple molecules in parallel"""
+def generate_shapes_parallel(smiles_list: list[str]) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    """Generate shapes and ph4 patches for multiple molecules in parallel"""
     global _process_pool
     if _process_pool is None:
         init_shape_generation()
@@ -182,8 +365,8 @@ def generate_shapes_parallel(smiles_list: list[str]) -> list[torch.Tensor]:
         results = _process_pool.map(_generate_shape_patches, uncached_smiles)
         
         # Update cache with new results
-        for smiles, shape in zip(uncached_smiles, results):
-            _shape_cache[smiles] = shape
+        for smiles, result in zip(uncached_smiles, results):
+            _shape_cache[smiles] = result  # Store tuple of (shape_patches, ph4_patches)
     
     # Return all shapes (from cache or newly generated)
     return [_shape_cache[s] for s in smiles_list]
@@ -216,11 +399,11 @@ def create_data(
     
     # Check cache first
     if product_smiles in _shape_cache:
-        shape_patches = _shape_cache[product_smiles]
+        shape_patches, ph4_patches = _shape_cache[product_smiles]
     else:
         # Generate shape if not in cache
-        shape_patches = _generate_shape_patches(product_smiles)
-        _shape_cache[product_smiles] = shape_patches
+        shape_patches, ph4_patches = _generate_shape_patches(product_smiles)
+        _shape_cache[product_smiles] = (shape_patches, ph4_patches)
 
     stack_feats = featurize_stack_actions(
         mol_idx_seq=mol_idx_seq,
@@ -233,6 +416,7 @@ def create_data(
         "mol_seq": mol_seq,
         "rxn_seq": rxn_seq,
         "shape_patches": shape_patches,
+        "ph4_patches": ph4_patches,
         "token_types": stack_feats["token_types"],
         "rxn_indices": stack_feats["rxn_indices"],
         "reactant_fps": stack_feats["reactant_fps"],
@@ -272,6 +456,7 @@ class ProjectionData(TypedDict, total=False):
 class ProjectionBatch(TypedDict, total=False):
     # Shape encoder
     shape_patches: torch.Tensor  # [batch_size, 343, 27]
+    ph4_patches: torch.Tensor
     # Decoder
     token_types: torch.Tensor
     rxn_indices: torch.Tensor
@@ -379,14 +564,38 @@ def visualize_shape_generation(smiles: str, save_path: str = "shapes"):
         obmol.make3D(forcefield="uff", steps=50)
         obmol.localopt(forcefield="uff", steps=25)
         
-        # Create shape directly from OpenBabel data
+        # Get pharmacophore features using SMARTS patterns
+        ph4_coords, ph4_types = get_pharmacophore_features(obmol)
+        
+        # Create shape and ph4 grid
+        resolution = 0.5
+        box_size = 15
+        grid_size = int(2 * box_size / resolution) + 1
+        
+        # Create pharmacophore grid
+        ph4_grid = torch.zeros((grid_size, grid_size, grid_size, 6), device='cpu')
+        
+        # Transform to grid space with more precise binning
+        if len(ph4_coords) > 0:
+            grid_coords = (ph4_coords + box_size) / resolution
+            grid_coords = torch.round(grid_coords * 1000) / 1000  # Round to 3 decimal places
+            bin_indices = grid_coords.floor().long()  # Consistent floor operation
+            
+            # Bin pharmacophore features
+            for feat_idx in range(len(ph4_coords)):
+                x, y, z = bin_indices[feat_idx]
+                feat_type = ph4_types[feat_idx]
+                if (0 <= x < grid_size) and (0 <= y < grid_size) and (0 <= z < grid_size):
+                    ph4_grid[x, y, z, feat_type] += 1
+        
+        # Create shape
         curr_cavity_shape = get_shape_from_obmol(
             obmol=obmol,
             atom_stamp=_atom_stamp,
-            grid_resolution=0.5,
-            max_dist=15
+            grid_resolution=resolution,
+            max_dist=box_size
         )
-            
+        
         # Center and extract shape
         grid_size = 21
         start_idx = curr_cavity_shape.shape[0]//2 - grid_size//2
@@ -398,96 +607,71 @@ def visualize_shape_generation(smiles: str, save_path: str = "shapes"):
             start_idx:end_idx
         ]
         
+        centered_ph4 = ph4_grid[
+            start_idx:end_idx,
+            start_idx:end_idx,
+            start_idx:end_idx
+        ]
+        
+        # Convert tensors to numpy for view_as_blocks
+        centered_shape_np = centered_shape.cpu().numpy() if isinstance(centered_shape, torch.Tensor) else centered_shape
+        centered_ph4_np = centered_ph4.cpu().numpy() if isinstance(centered_ph4, torch.Tensor) else centered_ph4
+        
         # Create patches
-        shape_patches = view_as_blocks(centered_shape, (3, 3, 3))
+        shape_patches = view_as_blocks(centered_shape_np, (3, 3, 3))
         shape_patches = shape_patches.reshape(-1, 27)
         
-        # Convert to tensor
-        shape_patches = torch.from_numpy(shape_patches).to(torch.float32)
+        ph4_patches = view_as_blocks(centered_ph4_np, (3, 3, 3, 6))
+        ph4_patches = ph4_patches.reshape(-1, 27 * 6)
         
-        # Create visualization
-        fig = plt.figure(figsize=(20, 5))  # Made wider to accommodate fourth panel
-        plt.suptitle(f"Shape Generation for {smiles[:50]}")
+        # Convert back to tensors
+        shape_patches = torch.from_numpy(shape_patches).float()
+        ph4_patches = torch.from_numpy(ph4_patches).float()
         
-        # 1. 3D shape visualization
-        ax = plt.subplot(141, projection='3d')
-        x, y, z = np.where(centered_shape > 0.5)
-        scatter = ax.scatter(x, y, z, c=centered_shape[x, y, z], cmap='viridis', alpha=0.6)
-        ax.set_title("3D Shape")
-        ax.set_box_aspect([1, 1, 1])
-        ax.set_xticklabels([])
-        ax.set_yticklabels([])
-        ax.set_zticklabels([])
-        ax.view_init(elev=20, azim=45)
+        # Save visualizations
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # 2. Shape patches
-        plt.subplot(142)
-        non_empty = (shape_patches.sum(dim=1) > 0)
-        patches_to_show = shape_patches[non_empty][:25]
-        if len(patches_to_show) > 0:
-            plt.imshow(patches_to_show.numpy())
-            plt.title(f"Shape Patches\n({len(non_empty)} total, {non_empty.sum()} non-empty)")
-        else:
-            plt.title("No non-empty patches found")
-        plt.axis('off')
+        # Plot shape
+        fig = plt.figure(figsize=(15, 5))
         
-        # 3. Original atomic positions
-        ax = plt.subplot(143, projection='3d')
-        coords = np.array([atom.coords for atom in obmol.atoms])
-        ax.scatter(coords[:, 0], coords[:, 1], coords[:, 2], c='red', s=100, alpha=0.8)
-        ax.set_title("Atomic Positions")
-        ax.set_box_aspect([1, 1, 1])
-        ax.set_xticklabels([])
-        ax.set_yticklabels([])
-        ax.set_zticklabels([])
-        ax.view_init(elev=20, azim=45)
+        # Plot molecular shape
+        ax1 = fig.add_subplot(131, projection='3d')
+        x, y, z = np.where(centered_shape > 0)
+        ax1.scatter(x, y, z, c='blue', alpha=0.1, marker='s')
+        ax1.set_title('Molecular Shape')
         
-        # 4. NEW: 3D Patches Visualization
-        ax = plt.subplot(144, projection='3d')
-        # Reconstruct the 3D grid from patches
-        grid_patches = view_as_blocks(centered_shape, (3, 3, 3))
-        for i in range(grid_patches.shape[0]):
-            for j in range(grid_patches.shape[1]):
-                for k in range(grid_patches.shape[2]):
-                    patch = grid_patches[i, j, k]
-                    if patch.sum() > 0:  # Only show non-empty patches
-                        # Create patch boundary
-                        x = [i*3, (i+1)*3]
-                        y = [j*3, (j+1)*3]
-                        z = [k*3, (k+1)*3]
-                        
-                        # Plot patch as a wireframe cube
-                        xx, yy = np.meshgrid(x, y)
-                        ax.plot_surface(xx, yy, np.full_like(xx, z[0]), alpha=0.1, color='b')
-                        ax.plot_surface(xx, yy, np.full_like(xx, z[1]), alpha=0.1, color='b')
-                        
-                        yy, zz = np.meshgrid(y, z)
-                        ax.plot_surface(np.full_like(yy, x[0]), yy, zz, alpha=0.1, color='b')
-                        ax.plot_surface(np.full_like(yy, x[1]), yy, zz, alpha=0.1, color='b')
-                        
-                        xx, zz = np.meshgrid(x, z)
-                        ax.plot_surface(xx, np.full_like(xx, y[0]), zz, alpha=0.1, color='b')
-                        ax.plot_surface(xx, np.full_like(xx, y[1]), zz, alpha=0.1, color='b')
-                        
-                        # Add points where patch has values
-                        patch_x, patch_y, patch_z = np.where(patch > 0.5)
-                        ax.scatter(i*3 + patch_x, j*3 + patch_y, k*3 + patch_z, 
-                                 c='red', alpha=0.6, s=50)
+        # Plot pharmacophore features
+        ax2 = fig.add_subplot(132, projection='3d')
+        feature_names = ['Aromatic', 'H-Bond Donor', 'H-Bond Acceptor', 
+                        'Positive', 'Negative', 'Hydrophobic']
+        colors = ['purple', 'blue', 'red', 'green', 'orange', 'gray']
         
-        ax.set_title("3D Patches Structure")
-        ax.set_box_aspect([1, 1, 1])
-        ax.set_xticklabels([])
-        ax.set_yticklabels([])
-        ax.set_zticklabels([])
-        ax.view_init(elev=20, azim=45)
+        for feat_type in range(6):
+            feat_coords = np.where(centered_ph4[..., feat_type] > 0)
+            if len(feat_coords[0]) > 0:
+                ax2.scatter(feat_coords[0], feat_coords[1], feat_coords[2], 
+                          c=colors[feat_type], label=feature_names[feat_type],
+                          alpha=0.6, marker='o')
+        ax2.legend()
+        ax2.set_title('Pharmacophore Features')
+        
+        # Plot combined visualization
+        ax3 = fig.add_subplot(133, projection='3d')
+        # Plot shape first
+        x, y, z = np.where(centered_shape > 0)
+        ax3.scatter(x, y, z, c='blue', alpha=0.1, marker='s')
+        # Plot features on top
+        for feat_type in range(6):
+            feat_coords = np.where(centered_ph4[..., feat_type] > 0)
+            if len(feat_coords[0]) > 0:
+                ax3.scatter(feat_coords[0], feat_coords[1], feat_coords[2], 
+                          c=colors[feat_type], label=feature_names[feat_type],
+                          alpha=0.6, marker='o')
+        ax3.legend()
+        ax3.set_title('Combined View')
         
         plt.tight_layout()
-        
-        # Save the figure
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{smiles[:30]}_{timestamp}.png"
-        filename = "".join(c if c.isalnum() else "_" for c in filename)
-        plt.savefig(f"{save_path}/{filename}", dpi=300, bbox_inches='tight')
+        plt.savefig(os.path.join(save_path, f'shape_ph4_{timestamp}.png'), dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"Visualization saved to {save_path}/{filename}")
+        return shape_patches, ph4_patches

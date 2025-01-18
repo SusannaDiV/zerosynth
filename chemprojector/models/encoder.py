@@ -112,7 +112,7 @@ class ShapeEncoder(BaseEncoder):
     def __init__(
         self,
         patch_size: int = 3,
-        d_model: int = 512,#d_model: int = 256, done to match the decoder
+        d_model: int = 512,
         nhead: int = 8,
         num_layers: int = 6,
         max_seq_length: int = 3000
@@ -121,11 +121,19 @@ class ShapeEncoder(BaseEncoder):
         self._dim = d_model
         self._patch_size = patch_size
         
-        self._patch_ffn = nn.Sequential(
+        # Separate FFNs for shape and ph4 patches
+        self._shape_ffn = nn.Sequential(
             nn.Linear(patch_size**3, d_model),
             nn.ReLU(),
             nn.Linear(d_model, d_model)
         )
+        
+        self._ph4_ffn = nn.Sequential(
+            nn.Linear(patch_size**3 * 6, d_model),  # 6 features per point
+            nn.ReLU(),
+            nn.Linear(d_model, d_model)
+        )
+        
         self._pos_embed = nn.Parameter(torch.zeros(1, max_seq_length, d_model))
         self._embed_dropout = nn.Dropout(0.1)
         self._transformer = nn.TransformerEncoder(
@@ -139,39 +147,34 @@ class ShapeEncoder(BaseEncoder):
         return self._dim
 
     def forward(self, batch: ProjectionBatch) -> tuple[torch.Tensor, torch.Tensor]:
-        if "shape_patches" not in batch:
-            raise ValueError("shape_patches must be in batch")
+        if "shape_patches" not in batch or "ph4_patches" not in batch:
+            raise ValueError("shape_patches and ph4_patches must be in batch")
             
         shape_patches = batch["shape_patches"]
+        ph4_patches = batch["ph4_patches"]
         bz, sl, _ = shape_patches.size()
         
-        # Check if all patches are zero
-        if torch.all(shape_patches == 0):
-            print(f"WARNING: All shape patches are zero! Batch size: {bz}, Sequence length: {sl}")
+        # Process shape and ph4 patches separately
+        x_shape = self._shape_ffn(shape_patches)
+        x_ph4 = self._ph4_ffn(ph4_patches)
         
-        # Check percentage of zero elements
-        #zero_percentage = (shape_patches == 0).float().mean().item() * 100
-        #if zero_percentage > 99:  # If more than 99% are zeros
-        #    print(f"WARNING: {zero_percentage:.2f}% of shape patch elements are zero! Batch size: {bz}, Sequence length: {sl}")
-        
-        x = self._patch_ffn(shape_patches)
+        # Combine the features
+        x = x_shape + x_ph4  # Simple addition, could be changed to concatenation or other combination
         
         if sl > self._pos_embed.size(1):
             raise ValueError(f"Sequence length {sl} exceeds positional embedding size {self._pos_embed.size(1)}")
         
-        pos = torch.arange(sl).unsqueeze(0).repeat(bz, 1).to(x.device)
         x = x + self._pos_embed[:, :sl]
         x = self._embed_dropout(x)
         
-        # Create padding mask (assuming no padding for now)
         padding_mask = torch.zeros((bz, sl), dtype=torch.bool, device=x.device)
         
-        x = x.transpose(0, 1)  # Transformer expects (seq_len, batch, d_model)
+        x = x.transpose(0, 1)
         x = self._transformer(x)
         x = self._norm(x)
-        x = x.transpose(0, 1)  # Convert back to (batch, seq_len, d_model)
+        x = x.transpose(0, 1)
         
-        return x, padding_mask 
+        return x, padding_mask
 
 def get_encoder(t: str, cfg) -> BaseEncoder:
     if t == "smiles":

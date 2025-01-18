@@ -37,13 +37,36 @@ def collate_padding_masks(masks: Sequence[torch.Tensor], max_size: int) -> torch
 def collate_shape_patches(features: list[torch.Tensor], max_size: int | None = None) -> torch.Tensor:
     normalized_features = []
     for f in features:
-        if f.shape[0] == 1:
-            f = f.repeat(343, 1)
-        elif f.shape[0] != 343:
-            raise ValueError(f"Unexpected shape patch size: {f.shape}. Expected (343, 27) or (1, 27)")
-        normalized_features.append(f)
+        if isinstance(f, tuple):  # Handle case where f is a tuple
+            shape_patch = f[0]  # Extract shape patches from tuple
+        else:
+            shape_patch = f
+            
+        if shape_patch.shape[0] == 1:
+            shape_patch = shape_patch.repeat(343, 1)
+        elif shape_patch.shape[0] != 343:
+            raise ValueError(f"Unexpected shape patch size: {shape_patch.shape}. Expected (343, 27) or (1, 27)")
+        normalized_features.append(shape_patch)
     
     return torch.stack(normalized_features, dim=0)
+
+
+def collate_ph4_patches(features: list[torch.Tensor], max_size: int | None = None) -> torch.Tensor:
+    normalized_features = []
+    for f in features:
+        if isinstance(f, tuple):  # Handle case where f is a tuple
+            ph4_patch = f[1]  # Extract ph4 patches from tuple
+        else:
+            ph4_patch = torch.zeros((343, 27 * 6), dtype=torch.float32)  # Default empty ph4 patch
+            
+        if ph4_patch.shape[0] == 1:
+            ph4_patch = ph4_patch.repeat(343, 1)
+        elif ph4_patch.shape[0] != 343:
+            raise ValueError(f"Unexpected ph4 patch size: {ph4_patch.shape}. Expected (343, 162) or (1, 162)")
+        normalized_features.append(ph4_patch)
+    
+    return torch.stack(normalized_features, dim=0)
+
 
 def apply_collate(
     spec: Mapping[str, Callable[[Sequence[torch.Tensor], int], torch.Tensor]],
