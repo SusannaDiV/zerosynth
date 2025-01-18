@@ -238,4 +238,10 @@ def run_parallel_sampling(
     count_recons = len(recons_targets)
     print(f"Reconstruction rate: {count_recons}/{total} = {count_recons / total:.3f}")
 
-    pool.end()
+    try:
+        # Clean up shape generation pool
+        from chemprojector.data.common import cleanup_shape_generation
+        cleanup_shape_generation()
+        pool.end()
+    except Exception as e:
+        print(f"Error cleaning up shape generation pool: {e}")

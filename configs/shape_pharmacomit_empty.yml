@@ -6,7 +6,7 @@ chem:
     morgan_radius: 2
     morgan_n_bits: 256
   rxn_matrix: data/processed/split/matrix_train.pkl
-  fpindex: data/processed/all/fpindex.pkl
+  fpindex: data/processed/all/fpindex_pharmacomit.pkl
 
 data:
   init_stack_weighted_ratio: 0.90

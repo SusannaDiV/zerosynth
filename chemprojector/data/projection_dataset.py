@@ -68,18 +68,6 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
     ) -> None:
         super().__init__()
         
-        # Debug fpindex contents
-        print("\nFPIndex Debug:")
-        print(f"Total molecules in fpindex: {len(fpindex._shape_patches)}")
-        if len(fpindex._shape_patches) > 0:
-            first_idx = next(iter(fpindex._shape_patches))
-            first_patches = fpindex._shape_patches[first_idx]
-            print(f"First molecule patches shape: {first_patches.shape}")
-            print(f"First molecule patches non-zeros: {torch.count_nonzero(first_patches).item()}")
-            print(f"Sample of indices: {list(fpindex._shape_patches.keys())[:5]}")
-        else:
-            print("WARNING: No shape patches found in fpindex!")
-        
         self._reaction_matrix = reaction_matrix
         self._max_num_atoms = max_num_atoms
         self._max_smiles_len = max_smiles_len
@@ -97,6 +85,10 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
     
 
     def __iter__(self):
+        # Get worker info
+        worker_info = torch.utils.data.get_worker_info()
+        worker_id = worker_info.id if worker_info is not None else None
+        
         while True:
             for stack in create_stack_step_by_step(
                 self._reaction_matrix,
@@ -146,7 +138,8 @@ class ProjectionDataset(IterableDataset[ProjectionData]):
                     rxn_seq=rxn_seq_full,
                     rxn_idx_seq=rxn_idx_seq_full,
                     fpindex=self._fpindex,
-                    encoder_type=self.encoder_type
+                    encoder_type=self.encoder_type,
+                    worker_id=worker_id
                 )
                 '''
                 # Override shape patches with correct molecule index
@@ -213,10 +206,6 @@ class ProjectionDataModule(pl.LightningDataModule):
         with open(self.config.chem.fpindex, "rb") as f:
             fpindex = pickle.load(f)
             # Convert all shape patches to float32
-            for idx in fpindex._shape_patches:
-                if isinstance(fpindex._shape_patches[idx], torch.Tensor):
-                    fpindex._shape_patches[idx] = fpindex._shape_patches[idx].to(torch.float32).cpu()
-
         print("Creating train dataset...")
         with tqdm(total=100, desc="Initializing train dataset") as pbar:
             self.train_dataset = ProjectionDataset(

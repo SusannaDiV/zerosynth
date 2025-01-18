@@ -1,6 +1,25 @@
 import enum
 from collections.abc import Sequence
 from typing import TypedDict
+import multiprocessing as mp
+from functools import partial
+import os
+import sys
+from pathlib import Path
+
+import torch
+import numpy as np
+from rdkit import Chem
+from skimage.util import view_as_blocks
+
+# Set specific OpenBabel paths
+conda_prefix = '/mnt/home/luost_local/micromamba/envs/sf'
+os.environ['BABEL_LIBDIR'] = f'{conda_prefix}/lib/openbabel/3.1.0'
+os.environ['BABEL_DATADIR'] = f'{conda_prefix}/share/openbabel/3.1.0'
+
+# Now import OpenBabel
+import openbabel as ob
+from openbabel import pybel
 
 import torch
 import numpy as np
@@ -14,6 +33,171 @@ from chemprojector.chem.reaction import Reaction
 from chemprojector.chem.stack import Stack
 from chemprojector.utils.image import draw_text, make_grid
 from chemprojector.chem.tfbio_data import get_atom_stamp, get_shape
+
+# Add shape cache
+_shape_cache = {}
+_atom_stamp = None  # Global atom stamp cache
+
+def _init_worker():
+    """Initialize worker process with global atom stamp"""
+    global _atom_stamp
+    resolution = 0.5
+    _atom_stamp = get_atom_stamp(grid_resolution=resolution, max_dist=4.0)
+
+def _generate_shape_patches(smiles: str) -> torch.Tensor:
+    """Worker function to generate shape patches for a single molecule"""
+    global _atom_stamp
+    try:
+        if _atom_stamp is None:
+            _init_worker()
+            
+        # Force CPU computations for consistency
+        with torch.device('cpu'):
+            # Convert SMILES to OpenBabel molecule
+            obmol = pybel.readstring("smi", smiles)
+            if obmol is None:
+                print(f"Failed to parse SMILES: {smiles}")
+                return torch.zeros((343, 27), dtype=torch.float32)
+            
+            # Quick 3D generation with minimal optimization
+            try:
+                obmol.make3D(forcefield="uff", steps=50)  # Reduced steps
+                obmol.localopt(forcefield="uff", steps=25)  # Minimal optimization
+            except:
+                try:
+                    obmol.make3D(steps=25)  # Last resort with minimal steps
+                except:
+                    raise ValueError(f"Failed to generate 3D conformer for: {smiles}")
+            
+            # Convert to RDKit molecule for shape calculation
+            mol_block = obmol.write("mol")
+            rdmol = Chem.MolFromMolBlock(mol_block)
+            if rdmol is None:
+                raise ValueError("Failed to convert OpenBabel molecule to RDKit molecule")
+            
+            # Create cavity
+            cavity = Chem.Mol(rdmol)
+            if cavity is None:
+                raise ValueError("Failed to create cavity")
+            
+            resolution = 0.5
+            box_size = 15
+            
+            curr_cavity_shape = get_shape(
+                mol=cavity,
+                atom_stamp=_atom_stamp,
+                grid_resolution=resolution,
+                max_dist=box_size
+            )
+            
+            if curr_cavity_shape is None or curr_cavity_shape.size == 0:
+                raise ValueError("Failed to compute cavity shape")
+                
+            # Center and extract shape
+            grid_size = 21
+            start_idx = curr_cavity_shape.shape[0]//2 - grid_size//2
+            end_idx = start_idx + grid_size
+            
+            centered_shape = curr_cavity_shape[
+                start_idx:end_idx,
+                start_idx:end_idx,
+                start_idx:end_idx
+            ]
+            
+            # Create patches
+            shape_patches = view_as_blocks(centered_shape, (3, 3, 3))
+            shape_patches = shape_patches.reshape(-1, 27)
+            
+            # Convert to tensor
+            result = torch.from_numpy(shape_patches).to(torch.float32)
+            return result
+            
+    except Exception as e:
+        print(f"Error processing {smiles}: {str(e)}")
+        return torch.zeros((343, 27), dtype=torch.float32)
+
+# Create a process pool for parallel shape generation
+_process_pool = None
+
+def init_shape_generation(num_workers: int = None):
+    """Initialize the process pool for parallel shape generation"""
+    global _process_pool
+    if _process_pool is None:
+        if num_workers is None:
+            num_workers = max(1, mp.cpu_count() - 1)
+        _process_pool = mp.Pool(num_workers, initializer=_init_worker)
+
+def generate_shapes_parallel(smiles_list: list[str]) -> list[torch.Tensor]:
+    """Generate shapes for multiple molecules in parallel"""
+    global _process_pool
+    if _process_pool is None:
+        init_shape_generation()
+    
+    # Filter out already cached molecules
+    uncached_smiles = [s for s in smiles_list if s not in _shape_cache]
+    
+    if uncached_smiles:
+        # Generate shapes in parallel
+        results = _process_pool.map(_generate_shape_patches, uncached_smiles)
+        
+        # Update cache with new results
+        for smiles, shape in zip(uncached_smiles, results):
+            _shape_cache[smiles] = shape
+    
+    # Return all shapes (from cache or newly generated)
+    return [_shape_cache[s] for s in smiles_list]
+
+def cleanup_shape_generation():
+    """Clean up the process pool"""
+    global _process_pool
+    if _process_pool is not None:
+        _process_pool.close()
+        _process_pool.join()
+        _process_pool = None
+
+def create_data(
+    product: Molecule,
+    mol_seq: Sequence[Molecule],
+    mol_idx_seq: Sequence[int | None],
+    rxn_seq: Sequence[Reaction | None],
+    rxn_idx_seq: Sequence[int | None],
+    fpindex: FingerprintIndex,
+    encoder_type: str = "shape",
+    device: torch.device = None,
+    worker_id: int = None,
+):
+    # Convert product to SMILES
+    product_smiles = Chem.MolToSmiles(product._rdmol, canonical=True)
+    
+    # Initialize worker if needed
+    if worker_id is not None and _atom_stamp is None:
+        _init_worker()
+    
+    # Check cache first
+    if product_smiles in _shape_cache:
+        shape_patches = _shape_cache[product_smiles]
+    else:
+        # Generate shape if not in cache
+        shape_patches = _generate_shape_patches(product_smiles)
+        _shape_cache[product_smiles] = shape_patches
+
+    stack_feats = featurize_stack_actions(
+        mol_idx_seq=mol_idx_seq,
+        rxn_idx_seq=rxn_idx_seq,
+        end_token=True,
+        fpindex=fpindex,
+    )
+
+    data: ProjectionData = {
+        "mol_seq": mol_seq,
+        "rxn_seq": rxn_seq,
+        "shape_patches": shape_patches,
+        "token_types": stack_feats["token_types"],
+        "rxn_indices": stack_feats["rxn_indices"],
+        "reactant_fps": stack_feats["reactant_fps"],
+        "token_padding_mask": stack_feats["token_padding_mask"],
+    }
+    return data
 
 
 class TokenType(enum.IntEnum):
@@ -107,160 +291,6 @@ def featurize_stack(
         end_token=end_token,
         fpindex=fpindex,
     )
-
-
-def create_data(
-    product: Molecule,
-    mol_seq: Sequence[Molecule],
-    mol_idx_seq: Sequence[int | None],
-    rxn_seq: Sequence[Reaction | None],
-    rxn_idx_seq: Sequence[int | None],
-    fpindex: FingerprintIndex,
-    encoder_type: str = "shape",
-    device: torch.device = None,
-):
-    # Try direct index first
-    if product in mol_seq:
-        seq_idx = mol_seq.index(product)
-    else:
-        # If direct lookup fails, try SMILES comparison
-        seq_idx = None
-        product_smiles = product.smiles
-        for i, mol in enumerate(mol_seq):
-            if mol.smiles == product_smiles:
-                seq_idx = i
-                break
-    
-    if seq_idx is None:
-        mol_idx = None
-    else:
-        mol_idx = mol_idx_seq[seq_idx]
-
-    if mol_idx is None or mol_idx not in fpindex._shape_patches:
-        try:
-            # Inlined compute_shape_patches function
-            with torch.device('cpu'):
-                # Generate 3D conformer with explicit checks
-                rdmol = Chem.AddHs(product._rdmol)
-                if rdmol is None:
-                    raise ValueError("Failed to add hydrogens")
-                
-                # Try multiple embedding methods in sequence
-                embed_success = False
-                
-                # 1. Try ETKDGv3 with default params
-                embed_params = AllChem.ETKDGv3()
-                embed_params.randomSeed = 42
-                embed_params.maxIterations = 1000
-                embed_result = AllChem.EmbedMolecule(rdmol, embed_params)
-                
-                if embed_result == -1:
-                    # 2. Try with random coords
-                    embed_params.useRandomCoords = True
-                    embed_result = AllChem.EmbedMolecule(rdmol, embed_params)
-                    
-                    if embed_result == -1:
-                        # 3. Try ETDKG with different parameters
-                        embed_params = AllChem.ETKDG()
-                        embed_params.randomSeed = 42
-                        embed_params.useBasicKnowledge = True
-                        embed_params.enforceChirality = False
-                        embed_result = AllChem.EmbedMolecule(rdmol, embed_params)
-                        
-                        if embed_result == -1:
-                            # 4. Try distance geometry with basic parameters
-                            embed_params = AllChem.srETKDGv3()
-                            embed_params.randomSeed = 42
-                            embed_result = AllChem.EmbedMolecule(rdmol, embed_params)
-                            
-                            if embed_result == -1:
-                                raise ValueError("Failed to embed molecule after multiple attempts")
-                
-                # Try MMFF optimization first, fall back to UFF
-                optimize_result = AllChem.MMFFOptimizeMolecule(rdmol)
-                if optimize_result == -1:
-                    optimize_result = AllChem.UFFOptimizeMolecule(rdmol)
-                
-                rdmol = Chem.RemoveHs(rdmol)
-                if rdmol is None:
-                    raise ValueError("Failed to remove hydrogens")
-                
-                # Create new molecule with conformer properly copied
-                new_rdmol = Chem.Mol(rdmol)
-                conf = rdmol.GetConformer()
-                new_rdmol.AddConformer(conf)
-                
-                # Create cavity from the new molecule with conformer
-                cavity = Chem.Mol(new_rdmol)
-                if cavity is None:
-                    raise ValueError("Failed to create cavity")
-                
-                # Verify cavity has conformer
-                if cavity.GetNumConformers() == 0:
-                    raise ValueError("Cavity has no conformer")
-                
-                # Use same parameters as in process_single_rotation
-                resolution = 0.5
-                box_size = 15
-                atom_stamp = get_atom_stamp(grid_resolution=resolution, max_dist=4.0)
-                
-                # Use memory-safe shape computation
-                curr_cavity_shape = get_shape(
-                    mol=cavity,
-                    atom_stamp=atom_stamp,
-                    grid_resolution=resolution,
-                    max_dist=box_size
-                )
-                
-                if curr_cavity_shape is None:
-                    raise ValueError("Failed to compute cavity shape")
-                
-                # Center and extract shape
-                grid_size = 21
-                start_idx = curr_cavity_shape.shape[0]//2 - grid_size//2
-                end_idx = start_idx + grid_size
-                
-                centered_shape = curr_cavity_shape[
-                    start_idx:end_idx,
-                    start_idx:end_idx,
-                    start_idx:end_idx
-                ]
-                
-                # Create patches
-                shape_patches = view_as_blocks(centered_shape, (3, 3, 3))
-                shape_patches = shape_patches.reshape(-1, 27)
-                
-                # Convert to tensor on CPU first
-                shape_patches = torch.from_numpy(shape_patches).to(torch.float32)
-                #print("Computing shape patches for new product")
-
-        except Exception as e:
-            ### Check why error codes 5 and 34 based on fpindex 
-            # print(f"WARNING: Failed to compute shape patches for new product: {e}")
-            # Return zero tensor on CPU
-            shape_patches = torch.zeros((343, 27), dtype=torch.float32, device='cpu')
-    else:
-        shape_patches = fpindex._shape_patches[mol_idx].cpu()
-        print("nonzero common")
-
-    stack_feats = featurize_stack_actions(
-        mol_idx_seq=mol_idx_seq,
-        rxn_idx_seq=rxn_idx_seq,
-        end_token=True,
-        fpindex=fpindex,
-    )
-
-    # Keep everything on CPU
-    data: ProjectionData = {
-        "mol_seq": mol_seq,
-        "rxn_seq": rxn_seq,
-        "shape_patches": shape_patches,
-        "token_types": stack_feats["token_types"],
-        "rxn_indices": stack_feats["rxn_indices"],
-        "reactant_fps": stack_feats["reactant_fps"],
-        "token_padding_mask": stack_feats["token_padding_mask"],
-    }
-    return data
 
 
 def draw_data(data: ProjectionData):
