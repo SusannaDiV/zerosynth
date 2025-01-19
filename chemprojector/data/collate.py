@@ -37,16 +37,11 @@ def collate_padding_masks(masks: Sequence[torch.Tensor], max_size: int) -> torch
 def collate_shape_patches(features: list[torch.Tensor], max_size: int | None = None) -> torch.Tensor:
     normalized_features = []
     for f in features:
-        if isinstance(f, tuple):  # Handle case where f is a tuple
-            shape_patch = f[0]  # Extract shape patches from tuple
-        else:
-            shape_patch = f
-            
-        if shape_patch.shape[0] == 1:
-            shape_patch = shape_patch.repeat(343, 1)
-        elif shape_patch.shape[0] != 343:
-            raise ValueError(f"Unexpected shape patch size: {shape_patch.shape}. Expected (343, 27) or (1, 27)")
-        normalized_features.append(shape_patch)
+        if f.shape[0] == 1:
+            f = f.repeat(343, 1)
+        elif f.shape[0] != 343:
+            raise ValueError(f"Unexpected shape patch size: {f.shape}. Expected (343, 27) or (1, 27)")
+        normalized_features.append(f)
     
     return torch.stack(normalized_features, dim=0)
 
@@ -54,17 +49,51 @@ def collate_shape_patches(features: list[torch.Tensor], max_size: int | None = N
 def collate_ph4_patches(features: list[torch.Tensor], max_size: int | None = None) -> torch.Tensor:
     normalized_features = []
     for f in features:
-        if isinstance(f, tuple):  # Handle case where f is a tuple
+        if isinstance(f, tuple):
             ph4_patch = f[1]  # Extract ph4 patches from tuple
         else:
-            ph4_patch = torch.zeros((343, 27 * 6), dtype=torch.float32)  # Default empty ph4 patch
+            ph4_patch = f  # Use the tensor directly
             
+        # Validate and normalize the shape
         if ph4_patch.shape[0] == 1:
             ph4_patch = ph4_patch.repeat(343, 1)
         elif ph4_patch.shape[0] != 343:
             raise ValueError(f"Unexpected ph4 patch size: {ph4_patch.shape}. Expected (343, 162) or (1, 162)")
+        
+        # Ensure float32 type
+        ph4_patch = ph4_patch.to(torch.float32)
         normalized_features.append(ph4_patch)
     
+    # Stack the features and return
+    return torch.stack(normalized_features, dim=0)
+
+
+def collate_acp4_fp(features: list[torch.Tensor], max_size: int | None = None) -> torch.Tensor:
+    """Collate ACP4 fingerprints.
+    
+    Args:
+        features: List of ACP4 fingerprint tensors, each of shape [840]
+        max_size: Ignored, kept for compatibility with other collate functions
+        
+    Returns:
+        Batched tensor of shape [batch_size, 840]
+    """
+    normalized_features = []
+    for f in features:
+        if isinstance(f, tuple):
+            acp4_fp = f[2]  # Extract ACP4 fp from tuple if needed
+        else:
+            acp4_fp = f
+            
+        # Validate shape
+        if acp4_fp.shape != torch.Size([840]):
+            raise ValueError(f"Unexpected ACP4 fingerprint size: {acp4_fp.shape}. Expected (840,)")
+        
+        # Ensure float32 type
+        acp4_fp = acp4_fp.to(torch.float32)
+        normalized_features.append(acp4_fp)
+    
+    # Stack the features and return
     return torch.stack(normalized_features, dim=0)
 
 

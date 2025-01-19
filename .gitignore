@@ -10,6 +10,7 @@ __pycache__/
 .Python
 build/
 jobs/
+failed_ph4_files/
 develop-eggs/
 dist/
 downloads/
@@ -20,7 +21,10 @@ lib64/
 parts/
 sdist/
 var/
+runsworking/
 runs/
+runs02working/
+shape_visualizations/
 wheels/
 share/python-wheels/
 *.egg-info/

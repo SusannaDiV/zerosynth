@@ -19,7 +19,8 @@ from .collate import (
     collate_padding_masks,
     collate_tokens,
     collate_shape_patches,
-    collate_ph4_patches
+    collate_ph4_patches,
+    collate_acp4_fp
 )
 from .common import ProjectionBatch, ProjectionData, create_data
 
@@ -36,6 +37,7 @@ class Collater:
         self.spec_shape = {
             "shape_patches": collate_shape_patches,
             "ph4_patches": collate_ph4_patches,
+            "acp4_fp": collate_acp4_fp,
         }
         self.spec_tokens = {
             "token_types": collate_tokens,

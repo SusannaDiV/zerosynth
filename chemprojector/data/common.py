@@ -9,6 +9,11 @@ from pathlib import Path
 from contextlib import contextmanager
 import warnings
 import io
+import tempfile
+import subprocess
+import pathlib
+import hashlib
+from datetime import datetime
 
 import torch
 import numpy as np
@@ -245,7 +250,7 @@ def get_shape_from_obmol(obmol, atom_stamp, grid_resolution, max_dist):
     shape[shape > 0] = 1
     return shape
 
-def _generate_shape_patches(smiles: str) -> tuple[torch.Tensor, torch.Tensor]:
+def _generate_shape_patches(smiles: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Worker function to generate shape and pharmacophore patches for a single molecule"""
     global _atom_stamp
     try:
@@ -258,7 +263,9 @@ def _generate_shape_patches(smiles: str) -> tuple[torch.Tensor, torch.Tensor]:
             obmol = pybel.readstring("smi", smiles)
             if obmol is None:
                 print(f"Failed to parse SMILES: {smiles}")
-                return torch.zeros((343, 27), dtype=torch.float32), torch.zeros((343, 27 * 6), dtype=torch.float32)
+                return (torch.zeros((343, 27), dtype=torch.float32), 
+                       torch.zeros((343, 27 * 6), dtype=torch.float32),
+                       torch.zeros(840, dtype=torch.float32))
             
             # Generate 3D conformer
             try:
@@ -272,6 +279,9 @@ def _generate_shape_patches(smiles: str) -> tuple[torch.Tensor, torch.Tensor]:
             
             # Get pharmacophore features using SMARTS patterns
             ph4_coords, ph4_types = get_pharmacophore_features(obmol)
+            
+            # Generate ACP4 fingerprint here
+            acp4_fp = generate_acp4_fingerprint(obmol)
             
             # Create shape
             resolution = 0.5
@@ -334,11 +344,13 @@ def _generate_shape_patches(smiles: str) -> tuple[torch.Tensor, torch.Tensor]:
             shape_patches = torch.from_numpy(shape_patches).float()
             ph4_patches = torch.from_numpy(ph4_patches).float()
             
-            return shape_patches, ph4_patches
+            return shape_patches, ph4_patches, acp4_fp
             
     except Exception as e:
         print(f"Error processing {smiles}: {str(e)}")
-        return torch.zeros((343, 27), dtype=torch.float32), torch.zeros((343, 27 * 6), dtype=torch.float32)
+        return (torch.zeros((343, 27), dtype=torch.float32), 
+                torch.zeros((343, 27 * 6), dtype=torch.float32),
+                torch.zeros(840, dtype=torch.float32))
 
 # Create a process pool for parallel shape generation
 _process_pool = None
@@ -351,8 +363,8 @@ def init_shape_generation(num_workers: int = None):
             num_workers = max(1, mp.cpu_count() - 1)
         _process_pool = mp.Pool(num_workers, initializer=_init_worker)
 
-def generate_shapes_parallel(smiles_list: list[str]) -> list[tuple[torch.Tensor, torch.Tensor]]:
-    """Generate shapes and ph4 patches for multiple molecules in parallel"""
+def generate_shapes_parallel(smiles_list: list[str]) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """Generate shapes, ph4 patches, and ACP4 fingerprints for multiple molecules in parallel"""
     global _process_pool
     if _process_pool is None:
         init_shape_generation()
@@ -361,14 +373,14 @@ def generate_shapes_parallel(smiles_list: list[str]) -> list[tuple[torch.Tensor,
     uncached_smiles = [s for s in smiles_list if s not in _shape_cache]
     
     if uncached_smiles:
-        # Generate shapes in parallel
+        # Generate features in parallel
         results = _process_pool.map(_generate_shape_patches, uncached_smiles)
         
         # Update cache with new results
         for smiles, result in zip(uncached_smiles, results):
-            _shape_cache[smiles] = result  # Store tuple of (shape_patches, ph4_patches)
+            _shape_cache[smiles] = result  # Store tuple of (shape_patches, ph4_patches, acp4_fp)
     
-    # Return all shapes (from cache or newly generated)
+    # Return all features (from cache or newly generated)
     return [_shape_cache[s] for s in smiles_list]
 
 def cleanup_shape_generation():
@@ -399,11 +411,11 @@ def create_data(
     
     # Check cache first
     if product_smiles in _shape_cache:
-        shape_patches, ph4_patches = _shape_cache[product_smiles]
+        shape_patches, ph4_patches, acp4_fp = _shape_cache[product_smiles]
     else:
-        # Generate shape if not in cache
-        shape_patches, ph4_patches = _generate_shape_patches(product_smiles)
-        _shape_cache[product_smiles] = (shape_patches, ph4_patches)
+        # Generate features if not in cache
+        shape_patches, ph4_patches, acp4_fp = _generate_shape_patches(product_smiles)
+        _shape_cache[product_smiles] = (shape_patches, ph4_patches, acp4_fp)
 
     stack_feats = featurize_stack_actions(
         mol_idx_seq=mol_idx_seq,
@@ -417,6 +429,7 @@ def create_data(
         "rxn_seq": rxn_seq,
         "shape_patches": shape_patches,
         "ph4_patches": ph4_patches,
+        "acp4_fp": acp4_fp,  # Added ACP4 fingerprint
         "token_types": stack_feats["token_types"],
         "rxn_indices": stack_feats["rxn_indices"],
         "reactant_fps": stack_feats["reactant_fps"],
@@ -442,7 +455,8 @@ class ProjectionData(TypedDict, total=False):
     '''
     # Shape encoder
     shape_patches: torch.Tensor
-    # ph4_patches: torch.Tensor
+    ph4_patches: torch.Tensor
+    acp4_fp: torch.Tensor
     # Decoder
     token_types: torch.Tensor
     rxn_indices: torch.Tensor
@@ -457,6 +471,7 @@ class ProjectionBatch(TypedDict, total=False):
     # Shape encoder
     shape_patches: torch.Tensor  # [batch_size, 343, 27]
     ph4_patches: torch.Tensor
+    acp4_fp: torch.Tensor
     # Decoder
     token_types: torch.Tensor
     rxn_indices: torch.Tensor
@@ -675,3 +690,118 @@ def visualize_shape_generation(smiles: str, save_path: str = "shapes"):
         plt.close()
         
         return shape_patches, ph4_patches
+
+def generate_acp4_fingerprint(obmol) -> torch.Tensor:
+    """Generate ACP4 fingerprint with proper error handling"""
+    print("\n\n!!!! STARTING ACP4 FINGERPRINT GENERATION !!!!\n\n")
+    try:
+        # Get pharmacophore features
+        ph4_coords, ph4_types = get_pharmacophore_features(obmol)
+        smiles = obmol.write("smi").strip()  # Use OpenBabel's write method instead of RDKit
+        
+        if len(ph4_coords) == 0:
+            print(f"No pharmacophore features found for: {smiles}")
+            return torch.zeros(840, dtype=torch.float32)
+        
+        print(f"\nProcessing molecule: {smiles}")
+        print(f"Found {len(ph4_coords)} pharmacophore features")
+        
+        # Generate PH4 file content
+        ph4_content = []
+        
+        # First line: number of features and molecule identifier
+        ph4_content.append(f"{len(ph4_coords)}:molecule")
+        
+        # Map feature types to ACP4 format
+        feature_names = {
+            0: 'ARO',  # Aromatic
+            1: 'HBD',  # H-bond donor
+            2: 'HBA',  # H-bond acceptor
+            3: 'POS',  # Positive charge
+            4: 'NEG',  # Negative charge
+            5: 'HYD'   # Hydrophobic
+        }
+        
+        # Write features in exact format from example
+        for feat_idx in range(len(ph4_coords)):
+            x, y, z = ph4_coords[feat_idx]
+            feat_type = ph4_types[feat_idx].item()
+            feat_name = feature_names[feat_type]
+            ph4_content.append(f"{feat_name} {x:.5f} {y:.5f} {z:.5f}")
+            print(f"Feature {feat_idx}: {feat_name} at ({x:.5f}, {y:.5f}, {z:.5f})")
+        
+        # Create temporary directory for ACP4 processing
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ph4_path = os.path.join(tmpdir, "temp.ph4")
+            
+            # Write PH4 file
+            with open(ph4_path, 'w') as f:
+                f.write('\n'.join(ph4_content))
+            
+            # Run ACP4
+            output_path = os.path.join(tmpdir, "temp.csv")
+            cmd = [
+                "./data/processed/all/acp4.exe",
+                "-i", ph4_path,
+                "-c", "5.0",
+                "-dx", "0.5",
+                "-o", output_path
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            
+            if result.returncode == 0 and os.path.exists(output_path):
+                with open(output_path, 'r') as f:
+                    fp_str = f.read().strip()
+                    if fp_str:
+                        parts = fp_str.split()
+                        if parts and parts[0] == '-1':  # Skip the -1 at start
+                            parts = parts[1:]
+                        fp = [float(x.split(':')[1]) if ':' in x else float(x) for x in parts]
+                        return torch.tensor(fp, dtype=torch.float32)
+            
+            # If ACP4 failed, print everything immediately
+            print("\n" + "#"*120)
+            print("## ACP4 FAILURE REPORT")
+            print("#"*120)
+            print(f"\nSMILES: {smiles}")
+            print("\nFeature coordinates:")
+            print(ph4_coords)
+            print("\nFeature types:")
+            print(ph4_types)
+            print("\nPH4 file content:")
+            print("-" * 40)
+            for line in ph4_content:
+                print(line)
+            print("-" * 40)
+            print("\nACP4 command:")
+            print(' '.join(cmd))
+            print(f"\nReturn code: {result.returncode}")
+            if result.stdout:
+                print(f"Stdout:\n{result.stdout}")
+            if result.stderr:
+                print(f"Stderr:\n{result.stderr}")
+            print("#"*120 + "\n")
+            
+            # Also save to file for later analysis
+            debug_dir = "failed_ph4_files"
+            os.makedirs(debug_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            failed_ph4_path = os.path.join(debug_dir, f"failed_{timestamp}.ph4")
+            
+            with open(failed_ph4_path, 'w') as f:
+                f.write('\n'.join(ph4_content))
+            print(f"PH4 file saved to: {failed_ph4_path}\n")
+            
+            return torch.zeros(840, dtype=torch.float32)
+            
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return torch.zeros(840, dtype=torch.float32)
