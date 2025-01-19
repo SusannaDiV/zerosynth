@@ -14,7 +14,6 @@ import torch
 import numpy as np
 from rdkit import Chem
 from skimage.util import view_as_blocks
-from e3fp.pipeline import fprints_from_smiles
 
 # Set specific OpenBabel paths
 conda_prefix = '/mnt/home/luost_local/micromamba/envs/sf'
@@ -246,8 +245,8 @@ def get_shape_from_obmol(obmol, atom_stamp, grid_resolution, max_dist):
     shape[shape > 0] = 1
     return shape
 
-def _generate_shape_patches(smiles: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Worker function to generate shape and pharmacophore patches and E3FP fingerprints for a single molecule"""
+def _generate_shape_patches(smiles: str) -> tuple[torch.Tensor, torch.Tensor]:
+    """Worker function to generate shape and pharmacophore patches for a single molecule"""
     global _atom_stamp
     try:
         if _atom_stamp is None:
@@ -259,42 +258,17 @@ def _generate_shape_patches(smiles: str) -> tuple[torch.Tensor, torch.Tensor, to
             obmol = pybel.readstring("smi", smiles)
             if obmol is None:
                 print(f"Failed to parse SMILES: {smiles}")
-                return (torch.zeros((343, 27), dtype=torch.float32), 
-                       torch.zeros((343, 27 * 6), dtype=torch.float32),
-                       torch.zeros(4096, dtype=torch.float32))
+                return torch.zeros((343, 27), dtype=torch.float32), torch.zeros((343, 27 * 6), dtype=torch.float32)
             
-            # Generate 3D conformer with OpenBabel
+            # Generate 3D conformer
             try:
-                obmol.make3D(forcefield="uff", steps=50)
-                obmol.localopt(forcefield="uff", steps=25)
+                obmol.make3D(forcefield="mmff94", steps=50)
+                obmol.localopt(forcefield="mmff94", steps=25)
             except:
                 try:
                     obmol.make3D(steps=25)
                 except:
                     raise ValueError(f"Failed to generate 3D conformer for: {smiles}")
-            
-            # Generate E3FP fingerprints directly from SMILES
-            try:
-                fprint_params = {
-                    "bits": 4096,
-                    "first": 0,
-                    "stereo": True,
-                    "include_disconnected": True,
-                    "remove_duplicate_substructs": False
-                }
-                
-                confgen_params = None
-                
-                fprints = fprints_from_smiles(smiles, name="mol", fprint_params=fprint_params)
-                if fprints:
-                    e3fp_tensor = torch.zeros(4096, dtype=torch.float32)
-                    for bit in fprints[0].indices:
-                        e3fp_tensor[bit] = 1.0
-                else:
-                    e3fp_tensor = torch.zeros(4096, dtype=torch.float32)
-            except Exception as e:
-                print(f"E3FP generation failed for {smiles}: {str(e)}")
-                e3fp_tensor = torch.zeros(4096, dtype=torch.float32)
             
             # Get pharmacophore features using SMARTS patterns
             ph4_coords, ph4_types = get_pharmacophore_features(obmol)
@@ -360,13 +334,11 @@ def _generate_shape_patches(smiles: str) -> tuple[torch.Tensor, torch.Tensor, to
             shape_patches = torch.from_numpy(shape_patches).float()
             ph4_patches = torch.from_numpy(ph4_patches).float()
             
-            return shape_patches, ph4_patches, e3fp_tensor
+            return shape_patches, ph4_patches
             
     except Exception as e:
         print(f"Error processing {smiles}: {str(e)}")
-        return (torch.zeros((343, 27), dtype=torch.float32), 
-               torch.zeros((343, 27 * 6), dtype=torch.float32),
-               torch.zeros(4096, dtype=torch.float32))
+        return torch.zeros((343, 27), dtype=torch.float32), torch.zeros((343, 27 * 6), dtype=torch.float32)
 
 # Create a process pool for parallel shape generation
 _process_pool = None
@@ -379,7 +351,7 @@ def init_shape_generation(num_workers: int = None):
             num_workers = max(1, mp.cpu_count() - 1)
         _process_pool = mp.Pool(num_workers, initializer=_init_worker)
 
-def generate_shapes_parallel(smiles_list: list[str]) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+def generate_shapes_parallel(smiles_list: list[str]) -> list[tuple[torch.Tensor, torch.Tensor]]:
     """Generate shapes and ph4 patches for multiple molecules in parallel"""
     global _process_pool
     if _process_pool is None:
@@ -394,7 +366,7 @@ def generate_shapes_parallel(smiles_list: list[str]) -> list[tuple[torch.Tensor,
         
         # Update cache with new results
         for smiles, result in zip(uncached_smiles, results):
-            _shape_cache[smiles] = result  # Store tuple of (shape_patches, ph4_patches, e3fp_tensor)
+            _shape_cache[smiles] = result  # Store tuple of (shape_patches, ph4_patches)
     
     # Return all shapes (from cache or newly generated)
     return [_shape_cache[s] for s in smiles_list]
@@ -427,11 +399,11 @@ def create_data(
     
     # Check cache first
     if product_smiles in _shape_cache:
-        shape_patches, ph4_patches, e3fp_tensor = _shape_cache[product_smiles]
+        shape_patches, ph4_patches = _shape_cache[product_smiles]
     else:
         # Generate shape if not in cache
-        shape_patches, ph4_patches, e3fp_tensor = _generate_shape_patches(product_smiles)
-        _shape_cache[product_smiles] = (shape_patches, ph4_patches, e3fp_tensor)
+        shape_patches, ph4_patches = _generate_shape_patches(product_smiles)
+        _shape_cache[product_smiles] = (shape_patches, ph4_patches)
 
     stack_feats = featurize_stack_actions(
         mol_idx_seq=mol_idx_seq,
@@ -445,7 +417,6 @@ def create_data(
         "rxn_seq": rxn_seq,
         "shape_patches": shape_patches,
         "ph4_patches": ph4_patches,
-        "e3fp_tensor": e3fp_tensor,
         "token_types": stack_feats["token_types"],
         "rxn_indices": stack_feats["rxn_indices"],
         "reactant_fps": stack_feats["reactant_fps"],
@@ -480,7 +451,6 @@ class ProjectionData(TypedDict, total=False):
     # Auxilliary
     mol_seq: Sequence[Molecule]
     rxn_seq: Sequence[Reaction | None]
-    e3fp_tensor: torch.Tensor
 
 
 class ProjectionBatch(TypedDict, total=False):
